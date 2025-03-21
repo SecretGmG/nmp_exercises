@@ -1,10 +1,11 @@
-import pandas as pd
-from functools import wraps
-import matplotlib.pyplot as plt
-from matplotlib.axes import Axes
 import numpy as np
+import pandas as pd
+import scipy as sp
+import matplotlib.pyplot as plt
 import sympy
+from functools import wraps
 from typing import Iterable, Tuple, List
+from warnings import catch_warnings
 
 import seaborn as sns
 sns.set_theme()
@@ -73,8 +74,19 @@ def error_propagation_formula(f : sympy.Matrix|Iterable[sympy.Expr], args : List
 
 
 @wraps(pd.read_csv)
-def read_dat(*args, **kwargs):
-    return pd.read_csv(*args, index_col=False, sep='\s+', **kwargs)
+def read_dat(*args, **kwargs) -> pd.DataFrame:
+    """
+    Read a CSV file with default parameters: index_col=False, sep='\\s+'.
+
+    Args:
+        *args: Positional arguments passed to pd.read_csv.
+        **kwargs: Keyword arguments passed to pd.read_csv.
+
+    Returns:
+        pd.DataFrame: The DataFrame read from the CSV file.
+    """
+    with catch_warnings(action = 'ignore', category=pd.errors.ParserWarning):
+        return pd.read_csv(*args, index_col=False, sep=r'\s+', **kwargs).drop(index = [0,1])
 
 #remove the arrowheads and set the pivot to mid to vizualize eigenvectors more effectively
 EIGEN_VEC_QUIVER_KWARGS = {'headwidth' : 0, 'headlength' : 0, 'headaxislength' : 0, 'pivot' : 'mid'}
@@ -88,7 +100,6 @@ def matrix_quiver(x : np.ndarray, y: np.ndarray, matrices : np.ndarray, shade_de
         x (np.ndarray): X-coordinates for the quiver plot.
         y (np.ndarray): Y-coordinates for the quiver plot.
         matrices (np.ndarray): Matrices for which eigenvectors are computed.
-        ax (Axes): Matplotlib axes object. If None, the current axes are used.
         shade_determinant (bool): If True, shades the plot based on the determinant of the matrices.
 
     Returns:
@@ -110,5 +121,5 @@ def matrix_quiver(x : np.ndarray, y: np.ndarray, matrices : np.ndarray, shade_de
 
 # a little trick to make importing the standard stuff a bit easier using from nmp_util import *
 __all__ = [
-    'np', 'pd', 'sympy','plt' ,'sns'
+    'np', 'pd', 'sympy','plt' ,'sns', 'sp'
 ]
