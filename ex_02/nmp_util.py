@@ -2,16 +2,16 @@ import numpy as np
 import pandas as pd
 import scipy as sp
 import matplotlib.pyplot as plt
+import seaborn as sns
 import sympy
 from functools import wraps
 from typing import Iterable, Tuple, List
 from warnings import catch_warnings
 
-import seaborn as sns
 sns.set_theme()
 
 # File i will keep continuously updating during the course, adding usefull functions
-# the docstrings were written with deepseek
+# the docstrings were written with ai
 
 
 ## SERIE 1
@@ -45,8 +45,6 @@ def get_inliers(data : np.ndarray, max_std : float= 4.0, iterative : bool = True
         
     return inliers
 
-
-
 ## SERIE 2
 
 def error_propagation_formula(f : sympy.Matrix|Iterable[sympy.Expr], args : List[sympy.Symbol]) -> Tuple[sympy.Expr, sympy.MatrixSymbol]:
@@ -65,7 +63,7 @@ def error_propagation_formula(f : sympy.Matrix|Iterable[sympy.Expr], args : List
     
     if not isinstance(f, sympy.Matrix):
         #assume that f is an iterable of expressions if it is not already a matrix
-        #in this case it should be possible to simly convert into a collimn matrix
+        #in this case it should be possible to simply convert into a column matrix
         f = sympy.Matrix(list(f))
     
     A = f.jacobian(args)
@@ -88,11 +86,10 @@ def read_dat(*args, **kwargs) -> pd.DataFrame:
     with catch_warnings(action = 'ignore', category=pd.errors.ParserWarning):
         return pd.read_csv(*args, index_col=False, sep=r'\s+', **kwargs).drop(index = [0,1])
 
-#remove the arrowheads and set the pivot to mid to vizualize eigenvectors more effectively
-EIGEN_VEC_QUIVER_KWARGS = {'headwidth' : 0, 'headlength' : 0, 'headaxislength' : 0, 'pivot' : 'mid'}
 
 
-def matrix_quiver(x : np.ndarray, y: np.ndarray, matrices : np.ndarray, shade_determinant = False):
+
+def matrix_quiver(x : np.ndarray, y: np.ndarray, matrices : np.ndarray, shade_determinant = False, label = None, det_label = None):
     """
     Visualizes eigenvectors of matrices using quiver plots.
 
@@ -101,23 +98,37 @@ def matrix_quiver(x : np.ndarray, y: np.ndarray, matrices : np.ndarray, shade_de
         y (np.ndarray): Y-coordinates for the quiver plot.
         matrices (np.ndarray): Matrices for which eigenvectors are computed.
         shade_determinant (bool): If True, shades the plot based on the determinant of the matrices.
-
+        label (str): Label for the eigenvectors. optional defaults to None
+        det_label (str): Label for the determinant. optional defaults to None
     Returns:
         None
     """
+    #remove the arrowheads and set the pivot to mid to vizualize eigenvectors
+    EIGEN_VEC_QUIVER_KWARGS = {'headwidth' : 0, 'headlength' : 0, 'headaxislength' : 0, 'pivot' : 'mid'}
     
     eigenvalues, eigenvectors = np.linalg.eig(matrices)
     # from the docs of np.linalg.eig : eigenvectors[:,i] is the eigenvector corresponding to the eigenvalue eigenvalues[i] !!!
 
     #scale by the eigenvalues
     scaled_eigenvectors = eigenvectors * eigenvalues[...,None,:]
-
+    determinants = eigenvalues[...,0]*eigenvalues[...,1]
+    
     if shade_determinant:
-        mesh = plt.pcolormesh(x, y, eigenvalues[...,0]*eigenvalues[...,1], alpha=0.5)
-        plt.colorbar(mesh, label = 'determinant [mm$^2$]')
+        mesh = plt.pcolormesh(x, y, determinants, alpha=0.5)
+        if not det_label is None:
+            plt.colorbar(mesh, label = det_label)
 
-    plt.quiver(x, y, scaled_eigenvectors[...,0,0], scaled_eigenvectors[...,1,0], **EIGEN_VEC_QUIVER_KWARGS).set_label('eigenvalues')
-    plt.quiver(x, y, scaled_eigenvectors[...,0,1], scaled_eigenvectors[...,1,1], **EIGEN_VEC_QUIVER_KWARGS)
+    q1 = plt.quiver(x, y, scaled_eigenvectors[...,0,0], scaled_eigenvectors[...,1,0], **EIGEN_VEC_QUIVER_KWARGS)
+    q2 = plt.quiver(x, y, scaled_eigenvectors[...,0,1], scaled_eigenvectors[...,1,1], **EIGEN_VEC_QUIVER_KWARGS)
+    
+    if not label is None:
+        #add empty scatter plot to add label, is a little hacky but works
+        plt.scatter(None,None,marker = r'+',label = label, color = 'black')
+    
+    # needed to ensure proper scaling of the eigenvector arrows
+    scale = np.max(q1.scale,q2.scale)
+    q1.scale = scale
+    q2.scale = scale
 
 # a little trick to make importing the standard stuff a bit easier using from nmp_util import *
 __all__ = [
