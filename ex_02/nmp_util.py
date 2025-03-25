@@ -1,18 +1,14 @@
 import numpy as np
 import pandas as pd
-import scipy as sp
 import matplotlib.pyplot as plt
 import seaborn as sns
+sns.set_style()
 import sympy
 from functools import wraps
 from typing import Iterable, Tuple, List
 from warnings import catch_warnings
 
-sns.set_theme()
-
 # File i will keep continuously updating during the course, adding usefull functions
-# the docstrings were written with ai
-
 
 ## SERIE 1
 def get_inliers(data : np.ndarray, max_std : float= 4.0, iterative : bool = True):
@@ -114,7 +110,7 @@ def matrix_quiver(x : np.ndarray, y: np.ndarray, matrices : np.ndarray, shade_de
     determinants = eigenvalues[...,0]*eigenvalues[...,1]
     
     if shade_determinant:
-        mesh = plt.pcolormesh(x, y, determinants, alpha=0.5)
+        mesh = plt.pcolormesh(x, y, determinants)
         if not det_label is None:
             plt.colorbar(mesh, label = det_label)
 
@@ -129,8 +125,3 @@ def matrix_quiver(x : np.ndarray, y: np.ndarray, matrices : np.ndarray, shade_de
     scale = np.max(q1.scale,q2.scale)
     q1.scale = scale
     q2.scale = scale
-
-# a little trick to make importing the standard stuff a bit easier using from nmp_util import *
-__all__ = [
-    'np', 'pd', 'sympy','plt' ,'sns', 'sp'
-]
