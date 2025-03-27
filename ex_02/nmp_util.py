@@ -79,8 +79,10 @@ def read_dat(*args, **kwargs) -> pd.DataFrame:
     Returns:
         pd.DataFrame: The DataFrame read from the CSV file.
     """
-    with catch_warnings(action = 'ignore', category=pd.errors.ParserWarning):
-        return pd.read_csv(*args, index_col=False, sep=r'\s+', **kwargs).drop(index = [0,1])
+    READ_DATA_KWARGS = {'index_col' : False, 'sep' : r'\s+', 'skiprows' : [0,1]}
+    
+    assert 'names' in kwargs, "Please provide the column names using the 'names' keyword argument."
+    return pd.read_csv(*args, **READ_DATA_KWARGS, **kwargs)
 
 
 
@@ -117,11 +119,11 @@ def matrix_quiver(x : np.ndarray, y: np.ndarray, matrices : np.ndarray, shade_de
     q1 = plt.quiver(x, y, scaled_eigenvectors[...,0,0], scaled_eigenvectors[...,1,0], **EIGEN_VEC_QUIVER_KWARGS)
     q2 = plt.quiver(x, y, scaled_eigenvectors[...,0,1], scaled_eigenvectors[...,1,1], **EIGEN_VEC_QUIVER_KWARGS)
     
-    if not label is None:
-        #add empty scatter plot to add label, is a little hacky but works
-        plt.scatter(None,None,marker = r'+',label = label, color = 'black')
-    
     # needed to ensure proper scaling of the eigenvector arrows
     scale = np.max(q1.scale,q2.scale)
     q1.scale = scale
     q2.scale = scale
+    
+    if not label is None:
+        #add empty scatter plot to add label, is a little hacky but works
+        plt.scatter(None,None,marker = r'+',label = label, color = 'black')
