@@ -10,14 +10,15 @@ from typing import Iterable, Tuple, List
 # File i will keep continuously updating during the course, adding usefull functions
 
 ## SERIE 1
-def get_inliers(data : np.ndarray, max_std : float= 4.0, iterative : bool = True):
+def get_inliers(data : np.ndarray, f : float= 4.0, iterative : bool = True, robust = True):
     """
     Identifies inliers in a dataset based on the standard deviation.
 
     Args:
         data (np.ndarray): Input data array.
-        max_std (float): Maximum number of standard deviations allowed for inliers. Default is 4.0.
+        f (float): Maximum number of standard deviations allowed for inliers. Default is 4.0.
         iterative (bool): If True, iteratively refines inliers. Default is True.
+        robust (bool) : If true use the median and MAD instead of mean and std. Default is True.
 
     Returns:
         np.ndarray: Boolean array indicating inliers (True) and outliers (False).
@@ -26,10 +27,15 @@ def get_inliers(data : np.ndarray, max_std : float= 4.0, iterative : bool = True
     inliers = np.ones_like(data, dtype=bool)
     
     while True:
-        std = data[inliers].std()
-        mean = data[inliers].mean()
+        if robust:
+            center = np.median(data[inliers])
+            sorted = np.sort(np.abs(data[inliers]-center))
+            std = sorted[int(len(sorted)*0.683)-1]
+        else:
+            std = data[inliers].std()
+            center = data[inliers].mean()
         
-        new_inliers = np.abs(data-mean) < max_std*std
+        new_inliers = np.abs(data-center) < f*std
         
         # stop iterating if specified or if no inliers removed
         if (not iterative) or np.all(new_inliers == inliers):
@@ -97,7 +103,6 @@ def matrix_quiver(x : np.ndarray, y: np.ndarray, matrices : np.ndarray, shade_de
         shade_determinant (bool): If True, shades the plot based on the determinant of the matrices.
         label (str): Label for the eigenvectors. optional defaults to None
         det_label (str): Label for the determinant. optional defaults to None
-        scale (float): Scale for the quiver plot. Default is 'auto'.
     Returns:
         None
     """
@@ -127,3 +132,89 @@ def matrix_quiver(x : np.ndarray, y: np.ndarray, matrices : np.ndarray, shade_de
     if not label is None:
         #add empty scatter plot to add label, is a little hacky but works
         plt.scatter(None,None,marker = r'+',label = label, color = 'black')
+        
+        
+## Serie 3
+
+def poly_design_matrix(degree, features) -> np.ndarray:
+    return np.column_stack([features**i for i in range(degree+1)[::-1]])
+
+def design_matrix(f : sympy.Expr, features : np.ndarray, parameters : List[sympy.Symbol], feature_sym = sympy.Symbol) -> np.ndarray:
+    """
+    Computes the design matrix for a given function and input features.
+    
+    Args:
+        f (sympy.Expr): Expression for the function.
+        features (np.ndarray): Input features.
+        parameters (List[sympy.Symbol]): List of symbols representing the parameters.
+        feature_sym (sympy.Symbol): Symbol representing the feature variable.
+    Return:
+        np.ndarray: Design matrix.
+    """
+    column_functions = [sympy.lambdify([feature_sym], sympy.diff(f, a)) for a in parameters]
+    
+    design_matrix_columns = [np.broadcast_to(column_function(features), features.shape) for column_function in column_functions]
+    
+    design_matrix = np.column_stack(design_matrix_columns)
+    return design_matrix
+    
+    
+
+def compute_parameters(y : np.ndarray, A : np.ndarray) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """
+    Computes the parameters of a linear model using the normal equation method.
+    
+    Args:
+        y (np.ndarray): Target variable.
+        A (np.ndarray): Design matrix.
+    
+    Returns:
+        Tuple containing:
+            - Parameters of the linear model.
+            - Mean square error.
+            - Inverse of the normal matrix.
+    """
+    b = A.T@y
+    N = A.T@A
+    N_inv = np.linalg.inv(N)
+    parameters = N_inv@b
+    residuals =  A@parameters - y
+    m_0_sr = (residuals.T@residuals) / (len(y) - len(parameters))
+    return parameters, m_0_sr, N_inv
+
+def poly_fit(degree, y, features) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """
+    Fits a polynomial of a given degree to the data using the normal equation method.
+    Does not generate a design matrix, saving memory.
+
+    Args:
+        degree (int): degree of the polynomial to fit.
+        y (np.ndarray): target variable.
+        features (np.ndarray): input features.
+
+    Returns:
+        Tuple containing:
+            - Parameters of the polynomial.
+            - Mean square error.
+            - Inverse of the normal matrix.
+    """
+    
+    b = np.array([
+            np.sum(x*y**i for x,y in zip(y, features))
+        for i in range(degree+1)[::-1]]
+        )
+    
+    #precompute sums of powers since the Matrix N reuses them
+    N_entries = [np.sum(x**i for x in features) for i in range(degree*2+1)]
+    
+    N = np.array([[
+            N_entries[i+j]
+        for i in range(degree+1)[::-1]] 
+        for j in range(degree+1)[::-1]]
+        )
+    
+    N_inv = np.linalg.inv(N)
+    parameters = N_inv @ b
+    residuals =  np.polyval(parameters, features) - y
+    m_0_sr = (residuals.T @ residuals) / (len(y) - len(parameters))
+    return parameters, m_0_sr, N_inv
