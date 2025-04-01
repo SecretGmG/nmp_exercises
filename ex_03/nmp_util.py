@@ -1,3 +1,4 @@
+from dataclasses import dataclass
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
@@ -6,19 +7,22 @@ sns.set_style()
 import sympy
 from functools import wraps
 from typing import Iterable, Tuple, List
+#improve readability of the output of numpy arrays in jupyter notebooks
+np.set_printoptions(linewidth=150)
+
 
 # File i will keep continuously updating during the course, adding usefull functions
 
 ## SERIE 1
-def get_inliers(data : np.ndarray, f : float= 4.0, iterative : bool = True, robust = True):
+def get_inliers(data : np.ndarray, f : float= 4.0, iterative : bool = False, robust = True):
     """
     Identifies inliers in a dataset based on the standard deviation.
 
     Args:
         data (np.ndarray): Input data array.
         f (float): Maximum number of standard deviations allowed for inliers. Default is 4.0.
-        iterative (bool): If True, iteratively refines inliers. Default is True.
-        robust (bool) : If true use the median and MAD instead of mean and std. Default is True.
+        iterative (bool): If True, iteratively refines inliers. Default is False.
+        robust (bool) : If true use the median and the value at the 68'th percentile of the absolute deviations instead of mean and std. Default is True.
 
     Returns:
         np.ndarray: Boolean array indicating inliers (True) and outliers (False).
@@ -28,14 +32,14 @@ def get_inliers(data : np.ndarray, f : float= 4.0, iterative : bool = True, robu
     
     while True:
         if robust:
-            center = np.median(data[inliers])
-            sorted = np.sort(np.abs(data[inliers]-center))
-            std = sorted[int(len(sorted)*0.683)-1]
+            mean = np.median(data[inliers])
+            deviations = np.abs(data[inliers] - mean)
+            std = np.percentile(deviations, 68.3)
         else:
             std = data[inliers].std()
-            center = data[inliers].mean()
+            mean = data[inliers].mean()
         
-        new_inliers = np.abs(data-center) < f*std
+        new_inliers = np.abs(data-mean) < f*std
         
         # stop iterating if specified or if no inliers removed
         if (not iterative) or np.all(new_inliers == inliers):
@@ -136,8 +140,35 @@ def matrix_quiver(x : np.ndarray, y: np.ndarray, matrices : np.ndarray, shade_de
         
 ## Serie 3
 
+
+@dataclass
+class LinearModelResult:
+    """
+    Class to hold parameters for a linear model.
+    """
+    parameters : np.ndarray
+    m_0_sr : float
+    normal_matrix : np.ndarray
+    residuals : np.ndarray
+    
+    
+    def covariance_matrix(self) -> np.ndarray:
+        """
+        Computes the covariance matrix of the parameters.
+
+        Returns:
+            np.ndarray: Covariance matrix.
+        """
+        return self.m_0_sr * np.linalg.inv(self.normal_matrix)
+
+    @property
+    def m_0(self) -> float:
+        return np.sqrt(self.m_0_sr)
+    
+    def __repr__(self):
+        return f"LinearModelResult(parameters = \n{self.parameters}\nm_0 = {self.m_0})\n normal_matrix =\n {self.normal_matrix}"
 def poly_design_matrix(degree, features) -> np.ndarray:
-    return np.column_stack([features**i for i in range(degree+1)[::-1]])
+    return np.column_stack([features**i for i in reversed(range(degree+1))])
 
 def design_matrix(f : sympy.Expr, features : np.ndarray, parameters : List[sympy.Symbol], feature_sym = sympy.Symbol) -> np.ndarray:
     """
@@ -157,10 +188,8 @@ def design_matrix(f : sympy.Expr, features : np.ndarray, parameters : List[sympy
     
     design_matrix = np.column_stack(design_matrix_columns)
     return design_matrix
-    
-    
 
-def compute_parameters(y : np.ndarray, A : np.ndarray) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+def normal_equation(y : np.ndarray, A : np.ndarray) -> LinearModelResult:
     """
     Computes the parameters of a linear model using the normal equation method.
     
@@ -169,20 +198,16 @@ def compute_parameters(y : np.ndarray, A : np.ndarray) -> Tuple[np.ndarray, np.n
         A (np.ndarray): Design matrix.
     
     Returns:
-        Tuple containing:
-            - Parameters of the linear model.
-            - Mean square error.
-            - Inverse of the normal matrix.
+        LinearModelResult: Parameters of the linear model.
     """
     b = A.T@y
     N = A.T@A
-    N_inv = np.linalg.inv(N)
-    parameters = N_inv@b
+    parameters = np.linalg.solve(N, b)
     residuals =  A@parameters - y
     m_0_sr = (residuals.T@residuals) / (len(y) - len(parameters))
-    return parameters, m_0_sr, N_inv
+    return LinearModelResult(parameters, m_0_sr, N, residuals)
 
-def poly_fit(degree, y, features) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+def poly_fit(degree, y, features) -> LinearModelResult:
     """
     Fits a polynomial of a given degree to the data using the normal equation method.
     Does not generate a design matrix, saving memory.
@@ -193,15 +218,12 @@ def poly_fit(degree, y, features) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
         features (np.ndarray): input features.
 
     Returns:
-        Tuple containing:
-            - Parameters of the polynomial.
-            - Mean square error.
-            - Inverse of the normal matrix.
+        LinearModelResult: Parameters of the polynomial fit.
     """
     
     b = np.array([
             np.sum(x*y**i for x,y in zip(y, features))
-        for i in range(degree+1)[::-1]]
+        for i in reversed(range(degree+1))]
         )
     
     #precompute sums of powers since the Matrix N reuses them
@@ -209,12 +231,11 @@ def poly_fit(degree, y, features) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
     
     N = np.array([[
             N_entries[i+j]
-        for i in range(degree+1)[::-1]] 
-        for j in range(degree+1)[::-1]]
+        for i in reversed(range(degree+1))] 
+        for j in reversed(range(degree+1))]
         )
     
-    N_inv = np.linalg.inv(N)
-    parameters = N_inv @ b
+    parameters = np.linalg.solve(N, b)
     residuals =  np.polyval(parameters, features) - y
     m_0_sr = (residuals.T @ residuals) / (len(y) - len(parameters))
-    return parameters, m_0_sr, N_inv
+    return LinearModelResult(parameters, m_0_sr, N, residuals)
