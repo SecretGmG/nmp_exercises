@@ -2,12 +2,10 @@ from dataclasses import dataclass
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
-import scipy.linalg
-import scipy.sparse
 import seaborn as sns
 sns.set_style()
 import sympy
-import scipy
+import scipy, scipy.linalg, scipy.stats, scipy.sparse
 from functools import wraps
 from typing import Iterable, Literal, Tuple, List
 #improve readability of the output of numpy arrays in jupyter notebooks
@@ -17,14 +15,14 @@ np.set_printoptions(linewidth=150)
 # File i will keep continuously updating during the course, adding usefull functions
 
 ## SERIE 1
-def get_inliers(data : np.ndarray, f : float= 4.0, iterative : bool = False, robust = True):
+def get_inliers(data : np.ndarray, f : float= 4.0, iterative : bool = True, robust = True):
     """
     Identifies inliers in a dataset based on the standard deviation.
 
     Args:
         data (np.ndarray): Input data array.
         f (float): Maximum number of standard deviations allowed for inliers. Default is 4.0.
-        iterative (bool): If True, iteratively refines inliers. Default is False.
+        iterative (bool): If True, iteratively refines inliers. Default is True.
         robust (bool) : If true use the median and the value at the 68'th percentile of the absolute deviations instead of mean and std. Default is True.
 
     Returns:
@@ -37,6 +35,8 @@ def get_inliers(data : np.ndarray, f : float= 4.0, iterative : bool = False, rob
         if robust:
             mean = np.median(data[inliers])
             deviations = np.abs(data[inliers] - mean)
+            #use np.percentile for faster computation of the 68.3 percentile
+            #it uses clever techniques to compute the percentile without sorting the entire array
             std = np.percentile(deviations, 68.3)
         else:
             std = data[inliers].std()
@@ -143,20 +143,46 @@ def matrix_quiver(x : np.ndarray, y: np.ndarray, matrices : np.ndarray, shade_de
         
 ## Serie 3
 
+
 @dataclass
 class LinearModelResult:
     """
-    Class to hold parameters for a linear model.
+    Class to hold relevant parameters for linear models.
     """
     parameters : np.ndarray
     rse : float # Residual Standard Error = m_0
     normal_matrix : np.ndarray
-    residuals : np.ndarray | None = None
+    f : int # degrees of freedom = n - u
+    residuals : np.ndarray
     
     @property
     def cofactor_matrix(self) -> np.ndarray:
         return scipy.linalg.inv(self.normal_matrix)
 
+    @property
+    def covariance_matrix(self) -> np.ndarray:
+        return self.rse**2 * self.cofactor_matrix
+    
+    def chi2test(self, sigma_0 : float = 1, alpha : float = 0.05) -> bool:
+        """
+        Computes the chi-squared test statistic.
+
+        Args:
+            sigma_0 (float): Expected standard deviation. Default is 1, 
+                assuming the Cofactor matrix was equal to the Covariance matrix of the data.
+            alpha (float): Significance level. Default is 0.05.
+
+        Returns:
+            Tuple:
+                - chi2_stat (float): Chi-squared statistic.
+                - bool: True if the chi-squared test passes, False otherwise.
+        """
+        # apply the methods as in the script chapter 4.11
+        chi2_stat = (self.rse / sigma_0)**2
+        critical_value = scipy.stats.chi2.ppf(1 - alpha, self.f) # In the script called x_{1-alpha}
+        return chi2_stat, chi2_stat * self.f < critical_value
+    
+    
     def __repr__(self):
         return f"LinearModelResult(parameters = \n{self.parameters}\nm_0 = {self.rse})\n normal_matrix =\n {self.normal_matrix}"
     
@@ -170,6 +196,8 @@ def poly_design_matrix(x : np.ndarray, degree : int) -> np.ndarray:
     Returns:
         np.ndarray: Design matrix.
     """
+    # reversed order to comply with np.polyval
+    # since np.polyval expects the coefficients in decreasing order of power
     return np.column_stack([x**i for i in reversed(range(degree+1))])
 
 def design_matrix(f : sympy.Expr, x : np.ndarray, parameters : List[sympy.Symbol], feature_sym = sympy.Symbol) -> np.ndarray:
@@ -184,36 +212,50 @@ def design_matrix(f : sympy.Expr, x : np.ndarray, parameters : List[sympy.Symbol
     Return:
         np.ndarray: Design matrix.
     """
-    column_functions = [sympy.lambdify([feature_sym], sympy.diff(f, a)) for a in parameters]
     
-    design_matrix_columns = [np.broadcast_to(column_function(x), x.shape) for column_function in column_functions]
+    # compute the partial derivative of the function with respect to each parameter
+    differentials = [sympy.lambdify([feature_sym], sympy.diff(f, a)) for a in parameters]
+    
+    # the collumns of the design matrix are the partial derivatives of the function with respect to each parameter
+    # evaluated at the input x
+    design_matrix_columns = [np.broadcast_to(d(x), x.shape) for d in differentials]
     
     design_matrix = np.column_stack(design_matrix_columns)
     return design_matrix
 
-def normal_equation(A : np.ndarray, y : np.ndarray) -> LinearModelResult:
+def normal_equation(A : np.ndarray, y : np.ndarray, P : scipy.sparse.spmatrix | None = None) -> LinearModelResult:
     """
     Computes the parameters of a linear model using the normal equation method.
     
     Args:
         A (np.ndarray): Design matrix.
         y (np.ndarray): Target variable.
-        weights (np.ndarray | float | None) The covariance of the data, if None uses identity default is None
+        P (scipy.sparse.spmatrix | None) The covariance of the data, if None uses identity default is None
     
     Returns:
         LinearModelResult: Parameters of the linear model.
     """
-    b = A.T@y
-    N = A.T@A
+    
+    if P == None:
+        b = A.T@y
+        N = A.T@A
+    else:
+        b = A.T@P@y
+        N = A.T@P@A
     
     parameters = np.linalg.solve(N, b)
     residuals =  A@parameters - y
-    m_0_sr = (residuals.T@residuals) / (len(y) - len(parameters))
+    
+    if P == None:
+        m_0_sr = (residuals.T@residuals) / (len(y) - len(parameters))
+    else:
+        m_0_sr = (residuals.T@P@residuals) / (len(y) - len(parameters))
     
     return LinearModelResult(
         parameters,
         m_0_sr**0.5,
         N,
+        len(y) - len(parameters),
         residuals)
 
 def _get_N_b(x : np.ndarray, y : np.ndarray, degree : int) -> Tuple[np.ndarray, np.ndarray]:
@@ -245,33 +287,43 @@ def _get_N_b(x : np.ndarray, y : np.ndarray, degree : int) -> Tuple[np.ndarray, 
             N[degree-i,degree-j] = np.sum(N_entries[i+j])
     return N, b
 
-def poly_fit(x : np.ndarray, y : np.ndarray, degree : int, method : Literal['design matrix','direct'] = 'direct') -> LinearModelResult:
+def poly_fit(x : np.ndarray, y : np.ndarray, degree : int, P : scipy.sparse.spmatrix | None = None, method : Literal['design matrix','direct'] = 'direct') -> LinearModelResult:
     """
     Fits a polynomial of a given degree to the data using the normal equation method.
-    Does not generate a design matrix, saving memory.
+    If the method 'direct' is used it does not generate a design matrix, saving memory.
 
     Args:
         x (np.ndarray): input features.
         y (np.ndarray): target variable.
         degree (int): degree of the polynomial to fit.
-        method Lietarl: method to use for fitting.
+        P (scipy.sparse.spmatrix | None): The covariance of the data, if None uses identity, default is None.
+        method Literal: method to use for fitting.
             - 'design matrix': uses the design matrix method.
             - 'direct': uses the direct method.
 
     Returns:
         LinearModelResult: Parameters of the polynomial fit.
     """
+    
     if method == 'design matrix':
         #use the design matrix method
         A : np.ndarray = poly_design_matrix(x, degree)
-        return normal_equation(A, y)
+        return normal_equation(A, y, P)
+    
     if method == 'direct':
+        assert P == None, "P not supported for direct method"
+        
         N, b = _get_N_b(x, y, degree)
     
         parameters = np.linalg.solve(N, b)
         residuals =  np.polyval(parameters, x) - y
         m_0_sr = (residuals.T @ residuals) / (len(y) - len(parameters))
     
-        return LinearModelResult(parameters, m_0_sr**0.5, N, residuals)
+        return LinearModelResult(
+            parameters, 
+            m_0_sr**0.5, 
+            N, 
+            len(y) - len(parameters),
+            residuals)
     
     raise Exception(f'method {method} not supported')

@@ -1,0 +1,106 @@
+# Bedeutung von $\sigma_0$
+
+Da oft nur die **relativen Genauigkeiten** der Messungen bekannt sind – nicht jedoch der **absolute Standardfehler** –, definieren wir die Kovarianzmatrix der Beobachtungen als  
+$$
+K_{ll} = \sigma_0^2 Q_{ll}
+$$  
+Dabei ist $K_{ll}$ die Kovarianzmatrix, $Q_{ll}$ wird als **Kofaktorenmatrix** bezeichnet. Im Folgenden verwenden wir $Q_{ll}$ zur weiteren Berechnung.
+
+# Die Gewichtsmatrix
+
+Die Gewichtsmatrix soll lediglich die **relative Gewichtung** der Beobachtungen modellieren. Daher ist es sinnvoll, mit der Kofaktorenmatrix zu arbeiten – nicht mit der Kovarianzmatrix.  
+$$
+P_{ll} = Q_{ll}^{-1}
+$$  
+*Falls $Q_{ll}$ nicht regulär ist, verwendet man stattdessen die Pseudoinverse.*
+
+# Die Designmatrix
+
+Um ein lineares funktionales Modell zu formulieren, definiert man die **Designmatrix** $A$, welche die Parameter des Modells mit den Beobachtungen verknüpft. Es gilt:  
+$$
+l + v = A x
+$$  
+Dabei sind  
+- $l$ die Beobachtungen,  
+- $x$ die gesuchten Modellparameter,  
+- $v$ die **Residuen**, also die Abweichungen zwischen Modell und Messung.
+
+# Die Normalengleichung
+
+Ziel ist es, die **gewichtete Summe der Residuenquadrate** zu minimieren:  
+$$
+\hat{x} = \arg \min_x v^T P v
+$$  
+Setzt man $v = A x - l$ ein, ergibt sich:  
+$$
+\hat{x} = \arg \min_x (A x - l)^T P (A x - l)
+$$  
+Durch Ableiten nach $x$ und Nullsetzen des Gradienten erhält man die **Normalengleichung**:  
+$$
+\hat{x} = (A^T P A)^{-1} A^T P l
+$$
+
+Dabei bezeichnen wir:
+- **Normalgleichungsmatrix**:  
+  $$
+  N = A^T P A
+  $$
+- **Rechte Seite des Gleichungssystems**:  
+  $$
+  b = A^T P l
+  $$
+
+
+Somit lässt sich die Lösung auch schreiben als  
+$$
+\hat{x} = N^{-1} b
+$$
+
+# Die Kofaktoren der Unbekannten
+
+Aus dem linearen Fehlerfortpflanzungsgesetz ergibt sich, dass die Kofaktorenmatrix der Unbekannten $x$ gegeben ist durch:  
+$$
+Q_{xx} = N^{-1}
+$$
+
+# Die Kovarianzmatrix der Unbekannten
+
+Ist $\sigma_0$ bekannt, ergibt sich die Kovarianzmatrix der geschätzten Parameter als:  
+$$
+K_{xx} = \sigma_0^2 Q_{xx}
+$$
+
+# Schätzung von $\sigma_0$ a posteriori
+
+Falls $\sigma_0$ nicht bekannt ist, kann er **a posteriori** geschätzt werden. Diese Schätzung nennen wir $m_0$, sie ist definiert durch:  
+$$
+m_0^2 = \frac{v^T P v}{n - u}
+$$  
+wobei:
+- $n$ die Anzahl der Beobachtungen $l$ ist,  
+- $u$ die Anzahl der geschätzten Parameter $x$.
+
+# Vergleich mit $\sigma_0$
+
+Falls ein **a priori**-Wert für $\sigma_0$ bekannt ist, kann man ihn mit $m_0$ vergleichen. Der Vergleichsausdruck ist bis auf den Faktor $n - u$ Chi-quadrat $\chi^2(n - u)$-verteilt:
+$$
+\frac{m_0^2}{\sigma_0^2} (n - u) \sim \chi^2(n - u)
+$$
+
+Daraus ergibt sich ein **Modelltest**: Für ein gegebenes Irrtumsrisiko $\alpha$ berechnet man den kritischen Wert $x_{1-\alpha}$, der die Gleichung erfüllt:
+$$
+\alpha = P(\chi^2(n - u) \leq x_{1-\alpha})
+$$
+
+Die Modellannahme ist akzeptiert, falls:
+$$
+\frac{m_0^2}{\sigma_0^2} < \frac{x_{1-\alpha}}{n - u}  
+\quad \Leftrightarrow \quad  
+v^T P v < \sigma_0^2 x_{1-\alpha}
+$$
+
+In python kann man diese wie folgt berechnen
+```python
+from scipy.stats.distributions import chi2
+chi2.ppf(0.975, df=2)
+```
