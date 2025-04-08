@@ -1,15 +1,13 @@
+from dataclasses import dataclass
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
-import scipy.sparse
 import seaborn as sns
 sns.set_style()
 import sympy
-import scipy, scipy.stats
+import scipy, scipy.linalg, scipy.stats, scipy.sparse
 from functools import wraps
-from typing import Callable, Iterable, Literal, Tuple, List
-from abc import ABC, abstractmethod
-
+from typing import Iterable, Literal, Tuple, List
 #improve readability of the output of numpy arrays in jupyter notebooks
 np.set_printoptions(linewidth=150)
 
@@ -98,6 +96,9 @@ def read_dat(*args, **kwargs) -> pd.DataFrame:
     assert 'names' in kwargs, "Please provide the column names using the 'names' keyword argument."
     return pd.read_csv(*args, **READ_DATA_KWARGS, **kwargs)
 
+
+
+
 def matrix_quiver(x : np.ndarray, y: np.ndarray, matrices : np.ndarray, shade_determinant = False, label = None, det_label = None):
     """
     Visualizes eigenvectors of matrices using quiver plots.
@@ -138,69 +139,29 @@ def matrix_quiver(x : np.ndarray, y: np.ndarray, matrices : np.ndarray, shade_de
     if not label is None:
         #add empty scatter plot to add label, is a little hacky but works
         plt.scatter([],[],marker = r'+',label = label, color = 'black')
+        
+        
+## Serie 3
 
 
-class FunctionalModel(ABC):
+@dataclass
+class LinearModelResult:
     """
-    Abstract base class for functional models.
-    At the moment only linear functional models are implemented.
-    The idea is to implement a general functional model that can be used for any funcitonal dependence,
-    during the rest of the course.
+    Class to hold relevant parameters for linear models.
     """
-    
-    x : np.ndarray
-    y : np.ndarray
-    P : scipy.sparse.spmatrix # weighting matrix, if None assume uncorrelated residuals
-    
-    normal_matrix : np.ndarray
-    b : np.ndarray
-
     parameters : np.ndarray
-    m_0 : float
-
-    y_pred : np.ndarray
+    rse : float # Residual Standard Error = m_0
+    normal_matrix : np.ndarray
+    f : int # degrees of freedom = n - u
+    residuals : np.ndarray
     
     @property
-    def residuals(self) -> np.ndarray:
-        return self.y_pred-self.y
-    
+    def cofactor_matrix(self) -> np.ndarray:
+        return scipy.linalg.inv(self.normal_matrix)
+
     @property
     def covariance_matrix(self) -> np.ndarray:
-        return self.m_0**2 * np.linalg.inv(self.normal_matrix)
-    
-    @property
-    def dof(self):
-        return len(self.x) - len(self.parameters)
-    
-    
-    def fit(self, x : np.ndarray, y : np.ndarray, weight_matrix: scipy.sparse.spmatrix|None = None):
-        self.x = np.asarray(x)
-        self.y = np.asarray(y)
-        
-        if weight_matrix is None:
-            weight_matrix = scipy.sparse.identity(len(x))
-        
-        self.P = weight_matrix
-        
-        self._set_up_normal_equation()
-        
-        self.parameters = np.linalg.solve(self.normal_matrix, self.b)
-        self.y_pred = self.evaluate(self.x)
-        self.m_0 = np.sqrt((self.residuals.T @ self.P @ self.residuals) / (self.dof))
-    
-    @abstractmethod
-    def _set_up_normal_equation(self) -> None:
-        pass
-    
-    @abstractmethod
-    def evaluate(self, x : np.ndarray) -> np.ndarray:
-        """
-        Evaluates the model at the given x values.
-        """
-        pass
-    
-    def __call__(self, x : np.ndarray):
-        return self.evaluate(x)
+        return self.rse**2 * self.cofactor_matrix
     
     def chi2test(self, sigma_0 : float = 1, alpha : float = 0.05) -> Tuple[float, float]:
         """
@@ -217,88 +178,152 @@ class FunctionalModel(ABC):
                 - critical_value: The chi-squared critical value at the given alpha.
         """
         # apply the methods as in the script chapter 4.11
-        z = (self.m_0 / sigma_0)**2 * self.dof # Notation from the script
-        critical_value = scipy.stats.chi2.ppf(1 - alpha, self.dof) # In the script called x_{1-alpha}
+        z = (self.rse / sigma_0)**2 * self.f # Notation from the script
+        critical_value = scipy.stats.chi2.ppf(1 - alpha, self.f) # In the script called x_{1-alpha}
         return z , critical_value
     
-    def plot(self):
-        """
-        Plots the data points and the fitted model.
-        """
-        sns.scatterplot(x = self.x, y = self.y, label='Data')
-        sns.lineplot(x = self.x, y = self.y_pred, label='Fitted Model', color = 'red')
     
-class PolyFunctionalModel(FunctionalModel):
+    def __repr__(self):
+        return f"LinearModelResult(parameters = \n{self.parameters}\nm_0 = {self.rse})\n normal_matrix =\n {self.normal_matrix}"
     
-    type Method = Literal['direct','design matrix']
-    # If direct method is used, the normal matrix and b vector are computed directly from the data.
-    # In this case the off diagonal elements of the Weighting matrix are ignored!
-    
-    degree : int
-    method : Method
-    
-    def __init__(self, degree : int, method: Method = 'direct'):
-        self.degree = degree
-        self.method = method
-    
-    def _set_up_normal_equation(self):
-        if self.method == 'direct':
-            # Ignore off diagonal elements in the direct method
-            diagonal = self.P.diagonal()
-            
-            #precompute sums of powers since the Matrix N reuses them
-            N_entries : np.ndarray = np.ndarray(self.degree*2+1)
-    
-            for i in range(self.degree*2+1):
-                N_entries[i] = np.sum(diagonal * self.x**i)
-            
-            
-            self.normal_matrix = np.ndarray((self.degree+1, self.degree+1))
-            for i in range(self.degree+1):
-                for j in range(self.degree+1):
-                    self.normal_matrix[self.degree-i,self.degree-j] = np.sum(N_entries[i+j])
-            
-            self.b = np.ndarray(self.degree+1)
-            for i in range(self.degree+1):
-                self.b[self.degree-i] = np.sum(diagonal * self.y * self.x**i)
-        
-        if self.method == 'design matrix':
-            A = np.column_stack([self.x**i for i in reversed(range(self.degree+1))])
-            self.normal_matrix = A.T @ self.P @ A
-            self.b = A.T @ self.P @ self.y
-    
-    def evaluate(self, x):
-        return np.polyval(self.parameters, x)
+def poly_design_matrix(x : np.ndarray, degree : int) -> np.ndarray:
+    """Computes the design matrix for a polynomial of a given degree.
 
-class SympyFunctionalModel(FunctionalModel):
-    function_expr : sympy.Expr
-    parameter_symbols : List[sympy.Symbol]
-    feature_symbol : sympy.Symbol
+    Args:
+        x (np.ndarray): input values.
+        degree (int): degree of the polynomial.
+
+    Returns:
+        np.ndarray: Design matrix.
+    """
+    # reversed order to comply with np.polyval
+    # since np.polyval expects the coefficients in decreasing order of power
+    return np.column_stack([x**i for i in reversed(range(degree+1))])
+
+def design_matrix(f : sympy.Expr, x : np.ndarray, parameters : List[sympy.Symbol], feature_sym = sympy.Symbol) -> np.ndarray:
+    """
+    Computes the design matrix for a given function and input x.
     
-    lambdified : Callable
+    Args:
+        f (sympy.Expr): Expression for the function.
+        x (np.ndarray): Input x.
+        parameters (List[sympy.Symbol]): List of symbols representing the parameters.
+        feature_sym (sympy.Symbol): Symbol representing the feature variable.
+    Return:
+        np.ndarray: Design matrix.
+    """
     
-    design_matrix : np.ndarray
+    # compute the partial derivative of the function with respect to each parameter
+    differentials = [sympy.lambdify([feature_sym], sympy.diff(f, a)) for a in parameters]
     
-    def __init__(self, function_expr : sympy.Expr, parameter_symbols : List[sympy.Symbol], feature_symbol : sympy.Symbol):
-        self.function_expr = function_expr
-        self.parameter_symbols = parameter_symbols
-        self.feature_symbol = feature_symbol
-        self.lambdified = sympy.lambdify([*self.parameter_symbols, self.feature_symbol], self.function_expr)
+    # the collumns of the design matrix are the partial derivatives of the function with respect to each parameter
+    # evaluated at the input x
+    design_matrix_columns = [np.broadcast_to(d(x), x.shape) for d in differentials]
     
-    def _set_up_normal_equation(self):
+    design_matrix = np.column_stack(design_matrix_columns)
+    return design_matrix
+
+def normal_equation(A : np.ndarray, y : np.ndarray, P : scipy.sparse.spmatrix | None = None) -> LinearModelResult:
+    """
+    Computes the parameters of a linear model using the normal equation method.
+    
+    Args:
+        A (np.ndarray): Design matrix.
+        y (np.ndarray): Target variable.
+        P (scipy.sparse.spmatrix | None) The covariance of the data, if None uses identity default is None
+    
+    Returns:
+        LinearModelResult: Parameters of the linear model.
+    """
+    
+    if P == None:
+        b = A.T@y
+        N = A.T@A
+    else:
+        b = A.T@P@y
+        N = A.T@P@A
+    
+    parameters = np.linalg.solve(N, b)
+    residuals =  A@parameters - y
+    
+    if P == None:
+        m_0_sr = (residuals.T@residuals) / (len(y) - len(parameters))
+    else:
+        m_0_sr = (residuals.T@P@residuals) / (len(y) - len(parameters))
+    
+    return LinearModelResult(
+        parameters,
+        m_0_sr**0.5,
+        N,
+        len(y) - len(parameters),
+        residuals)
+
+def _get_N_b(x : np.ndarray, y : np.ndarray, degree : int) -> Tuple[np.ndarray, np.ndarray]:
+    """ Computes the normal matrix and the vector b directly for polynomial fitting.
+
+    Args:
+        x (np.ndarray): input features.
+        y (np.ndarray): target variable.
+        degree (int): degree of the polynomial.
+
+    Returns:
+        Tuple containing:
+            - np.ndarray: Normal matrix.
+            - np.ndarray: Vector b.
+    """
+    b : np.ndarray = np.ndarray(degree+1)
+    for i in range(degree+1):
+        b[degree-i] = np.sum(y * x**i)
+    
+    #precompute sums of powers since the Matrix N reuses them
+    N_entries : np.ndarray = np.ndarray(degree*2+1)
+    for i in range(degree*2+1):
+        N_entries[i] = np.sum(x**i)
+    
+    N : np.ndarray = np.ndarray((degree+1, degree+1))
+    
+    for i in range(degree+1):
+        for j in range(degree+1):
+            N[degree-i,degree-j] = np.sum(N_entries[i+j])
+    return N, b
+
+def poly_fit(x : np.ndarray, y : np.ndarray, degree : int, P : scipy.sparse.spmatrix | None = None, method : Literal['design matrix','direct'] = 'direct') -> LinearModelResult:
+    """
+    Fits a polynomial of a given degree to the data using the normal equation method.
+    If the method 'direct' is used it does not generate a design matrix, saving memory.
+
+    Args:
+        x (np.ndarray): input features.
+        y (np.ndarray): target variable.
+        degree (int): degree of the polynomial to fit.
+        P (scipy.sparse.spmatrix | None): The covariance of the data, if None uses identity, default is None.
+        method Literal: method to use for fitting.
+            - 'design matrix': uses the design matrix method.
+            - 'direct': uses the direct method.
+
+    Returns:
+        LinearModelResult: Parameters of the polynomial fit.
+    """
+    
+    if method == 'design matrix':
+        #use the design matrix method
+        A : np.ndarray = poly_design_matrix(x, degree)
+        return normal_equation(A, y, P)
+    
+    if method == 'direct':
+        assert P == None, "P not supported for direct method"
         
-        # compute the partial derivative of the function with respect to each parameter
-        differentials = [sympy.lambdify([self.feature_symbol], sympy.diff(self.function_expr, a)) for a in self.parameter_symbols]
+        N, b = _get_N_b(x, y, degree)
     
-        # the collumns of the design matrix are the partial derivatives of the function with respect to each parameter
-        # evaluated at the input x
-        # broadcastring the result is necessary because sometimes the lambdified function returns a scalar (if the function is constant)
-        A_collumns = [np.broadcast_to(d(self.x), self.x.shape) for d in differentials]
-        
-        A = np.column_stack(A_collumns)
-        
-        self.normal_matrix =  A.T @ self.P @ A
-        self.b = A.T @ self.P @ self.y
+        parameters = np.linalg.solve(N, b)
+        residuals =  np.polyval(parameters, x) - y
+        m_0_sr = (residuals.T @ residuals) / (len(y) - len(parameters))
     
-    def evaluate(self, x) -> np.ndarray:
-        return self.lambdified(*self.parameters, x)
+        return LinearModelResult(
+            parameters, 
+            m_0_sr**0.5, 
+            N, 
+            len(y) - len(parameters),
+            residuals)
+    
+    raise Exception(f'method {method} not supported')
