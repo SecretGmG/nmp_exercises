@@ -18,12 +18,12 @@ $$
 
 Um ein lineares funktionales Modell zu formulieren, definiert man die **Designmatrix** $A$, welche die Parameter des Modells mit den Beobachtungen verknüpft. Es gilt:  
 $$
-l + v = A x
+l - v = A x
 $$  
 Dabei sind  
 - $l$ die Beobachtungen,  
 - $x$ die gesuchten Modellparameter,  
-- $v$ die **Residuen**, also die Abweichungen zwischen Modell und Messung.
+- $v$ die **Residuen**, also die Abweichungen zwischen Modell und Messung. Observed $-$ Computed
 
 # Die Normalengleichung
 
@@ -104,3 +104,33 @@ In python kann man diese wie folgt berechnen
 from scipy.stats.distributions import chi2
 chi2.ppf(0.975, df=2)
 ```
+
+
+# Nicht linearer Ausgleich
+
+Man hat nun ein Funktionales Modell welches nicht linear von den **Parametern** $a_1, \dots a_u$ abhängt.
+
+**Bsp:**
+
+$$
+h_j = a_0^2 + \frac{1}{a_1}t_1^2
+$$
+
+**Frage**
+
+Wie sieht nun die Design Matrix aus?
+
+Man linearisiert das System! (Taylorentwicklung)
+
+$$
+h(a_0, a_1) = h(\tilde{a}_0, \tilde{a}_1) + \left.\frac{\partial h}{\partial a_0}\right|_{(\tilde{a}_0, \tilde{a}_1)}\Delta a_0 + \left.\frac{\partial h}{\partial a_1}\right|_{(\tilde{a}_0, \tilde{a}_1)}\Delta a_1 + \mathcal{O}(\Delta a^2)
+$$
+So erhält man
+$$
+\Delta l = h_i-h(\tilde{a}_0, \tilde{a}_1) = A \Delta x
+$$
+man kann also nun eine Normalgleichung aufstellen der Form:
+$$
+\Delta x = N^{-1} b = (A^T P A)^{-1} A^T P \Delta l
+$$
+
