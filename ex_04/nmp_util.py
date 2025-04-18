@@ -7,7 +7,7 @@ sns.set_style()
 import sympy
 from scipy import stats
 from functools import wraps
-from typing import Callable, Iterable, Literal, Tuple, List
+from typing import Callable, Dict, Iterable, Literal, Tuple, List
 from abc import ABC, abstractmethod
 import warnings
 from IPython.display import display
@@ -80,6 +80,11 @@ def error_propagation_formula(f : sympy.Matrix|Iterable[sympy.Expr], args : List
     K = sympy.MatrixSymbol('K',len(args), len(args))
     return A * K * A.T , K #skript S.12
 
+def propagate_error(f : sympy.Matrix|Iterable[sympy.Expr], args_symbols : List[sympy.Symbol], args : np.ndarray, cov : np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+    cov_expr, K = error_propagation_formula(f, args_symbols)
+    result = sympy.lambdify(args_symbols, f)(*args)
+    result_cov = sympy.lambdify([*args_symbols, K],cov_expr)(*args, cov)
+    return (result, result_cov)
 
 def matrix_quiver(x : np.ndarray, y: np.ndarray, matrices : np.ndarray, shade_determinant = False, label = None, det_label = None):
     """
@@ -121,6 +126,7 @@ def matrix_quiver(x : np.ndarray, y: np.ndarray, matrices : np.ndarray, shade_de
 
 
 # Serie 3&4
+# I chose to delete the direct method since it is not noticably more efficient and bloats the code 
 
 class FunctionalModel(ABC):
     """
@@ -132,27 +138,26 @@ class FunctionalModel(ABC):
     If you are only interested in the cofactors, just pass sigma = 1, if you have sigma a priori, pass it excplicitally.
     """
     
+    # These parameters can be set expcicitally
     max_iter : int = 10_000
     epsilon : float = 1e-4
     
+    parameters : np.ndarray # set this field to define initial parameters before calling fit()
+    
     logger : Callable = lambda *args : None
     
+    # These are read only and should not be changed from outside the class
     iterations : int = 0
     
-    x : np.ndarray
-    y : np.ndarray
+    x : np.ndarray #observed x
+    y : np.ndarray #observed y
     P : scipy.sparse.dia_array # weighting matrix
     
     A : np.ndarray # design matrix
     
     normal_matrix : np.ndarray
     b : np.ndarray #rhs of normal equation
-
-    parameters : np.ndarray
-    
-    def set_parameters(self, parameters : np.ndarray) -> None:
-        self.parameters = parameters
-    
+    delta_parameters : np.ndarray # updates of the parameters in iterative least squares
     
     m_0 : float = np.inf
 
@@ -164,8 +169,8 @@ class FunctionalModel(ABC):
     
     @property
     def residuals(self) -> np.ndarray:
-        return self.y_pred-self.y
-    
+        # observed minus computed
+        return self.y-self.y_pred
     
     
     def fit(self, x : np.ndarray, y : np.ndarray, weight_matrix: scipy.sparse.dia_array|None = None):
@@ -194,13 +199,13 @@ class FunctionalModel(ABC):
             
             # Then use the normal equations to compute the change in the parameterss
             self.normal_matrix = self.A.T @ self.P @ self.A
-            # use P.dot() since it is more efficient here to compute from right to left
+            # use P.dot() since it is more efficient here to compute from right to left (because the intermediate matrix doesn't need to be stored)
             self.b = self.A.T @ self.P.dot(self.y - self.y_pred)
         
-            delta_parameters = np.linalg.solve(self.normal_matrix, self.b)
+            self.delta_parameters = np.linalg.solve(self.normal_matrix, self.b)
             
             # Update the parameters and assiciated values
-            self.parameters += delta_parameters
+            self.parameters = self.parameters + self.delta_parameters
             self.y_pred = self.eval(self.x)
             self.m_0 = np.sqrt((self.residuals.T @ self.P @ self.residuals) / (self.dof))
             
@@ -208,7 +213,7 @@ class FunctionalModel(ABC):
             self.logger(self)
             
             # stop iterating if the change in all the parameters is smaller than epsilon
-            if np.all(np.abs(delta_parameters) < self.epsilon):
+            if np.all(np.abs(self.delta_parameters) < self.epsilon):
                 break
         
         if self.iterations == self.max_iter:
@@ -222,12 +227,11 @@ class FunctionalModel(ABC):
             sigma = self.m_0
         return sigma**2 * np.linalg.inv(self.normal_matrix)
     
-    def eval_linearized(self, x : np.ndarray) -> np.ndarray:
-        """
-        Evaluates the linearized model at x.
-        """
-        A = self.get_design_matrix(x)
-        return A @ self.parameters
+    def parametter_corr(self) -> np.ndarray:
+        cofactor_matrix = self.parameter_cov(1)
+        diag = cofactor_matrix.diagonal()**0.5
+        return cofactor_matrix / np.outer(diag, diag)
+        
     
     def eval_cov(self, x : np.ndarray, sigma : float = None) -> np.ndarray:
         """
@@ -244,6 +248,7 @@ class FunctionalModel(ABC):
         # if we only care about the diagonal, it is more efficient to compute the sum directly
         return np.einsum('ij,jk,ki -> i', A, self.parameter_cov(sigma), A.T)
 
+    
     def chi2_statistic(self, sigma_0 : float = 1) -> float:
         """
         Computes the chi-squared test statistic.
@@ -266,7 +271,7 @@ class FunctionalModel(ABC):
         
         plt.errorbar(x = self.x, y = self.y, yerr=sigma * self.P.diagonal()**(-0.5),fmt = '.', label='data',color= c_data)
         
-        #use the max of sigma_o and m_0
+        #use the max of sigma_0 and m_0
         sigma = max(sigma, self.m_0)
         
         plt.errorbar(self.x, self.y_pred, self.eval_cov_diags(self.x, sigma)**0.5, fmt = '.',color= c_model, label='model prediction')
@@ -386,11 +391,12 @@ class SympyFunctionalModel(FunctionalModel):
         #set initial parameters to zero by default
         self.parameters = np.zeros(len(parameter_symbols))
     
-    def eval(self, x) -> np.ndarray:
+    def eval(self, x : np.ndarray) -> np.ndarray:
+        x = np.asarray(x)
         return np.broadcast_to(self.lambdified(*self.parameters, x), x.shape)
     
     def get_design_matrix(self, x : np.ndarray) -> np.ndarray:
-        
+        x = np.asarray(x)
         # the collumns of the design matrix are the partial derivatives of the function with respect to each parameter
         # evaluated at the input x, and the current parameters
         # broadcastring the result is necessary because sometimes the lambdified function returns a scalar (if the function is constant)
@@ -398,3 +404,39 @@ class SympyFunctionalModel(FunctionalModel):
         
         return np.column_stack(A_collumns)
     
+    def show_correlation(self):
+        matshow = plt.matshow(self.parametter_corr())
+        plt.colorbar(matshow, label = 'correlation')
+        n_ticks = len(self.parameter_symbols)
+        ticks = [f'${sympy.latex(s)}$' for s in self.parameter_symbols]
+        plt.xlabel('parameter')
+        plt.gca().xaxis.set_label_position('top')
+        plt.ylabel('parameter')
+        plt.xticks(range(n_ticks), ticks)
+        plt.yticks(range(n_ticks), ticks)
+
+
+
+def fit_inliers(model : FunctionalModel, x : np.ndarray, y : np.ndarray, cofactor_matrix : np.ndarray, get_inliers_args : Dict = None) -> np.ndarray:
+    """
+    fits a model and iteratively removes outliers via the normalized residuals.
+    returns the final inliers
+    """
+    if get_inliers_args is None:
+        get_inliers_args = {}
+    
+    inliers = np.ones_like(x, bool)
+    
+    weights = cofactor_matrix.diagonal() ** (-0.5)
+    
+    while True:
+        inlier_cofactor_matrix = cofactor_matrix[inliers,:][:,inliers]
+        weight_matrix = scipy.sparse.dia_array(np.linalg.inv(inlier_cofactor_matrix))
+        model.fit(x[inliers], y[inliers], weight_matrix)
+        new_inliers = get_inliers((model.eval(x) - y) * weights, **get_inliers_args)
+        
+        if np.all(new_inliers == inliers):
+            break
+        inliers = new_inliers
+    
+    return inliers

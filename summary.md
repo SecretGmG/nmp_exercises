@@ -120,7 +120,7 @@ $$
 
 Wie sieht nun die Design Matrix aus?
 
-Man linearisiert das System! (Taylorentwicklung)
+Man linearisiert das System! (Taylorentwicklung in den parametern)
 
 $$
 h(a_0, a_1) = h(\tilde{a}_0, \tilde{a}_1) + \left.\frac{\partial h}{\partial a_0}\right|_{(\tilde{a}_0, \tilde{a}_1)}\Delta a_0 + \left.\frac{\partial h}{\partial a_1}\right|_{(\tilde{a}_0, \tilde{a}_1)}\Delta a_1 + \mathcal{O}(\Delta a^2)
@@ -134,3 +134,4 @@ $$
 \Delta x = N^{-1} b = (A^T P A)^{-1} A^T P \Delta l
 $$
 
+So kann man iterativ die Parameter $x$ bestimmen!
