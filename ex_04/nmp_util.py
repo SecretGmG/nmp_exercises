@@ -1,17 +1,16 @@
 import numpy as np
-import pandas as pd
 import matplotlib.pyplot as plt
 import scipy.sparse
-import seaborn as sns
-sns.set_style()
+from scipy.sparse import linalg
 import sympy
 from scipy import stats
-from functools import wraps
-from typing import Callable, Dict, Iterable, Literal, Tuple, List
+from typing import Callable, Dict, Iterable, Tuple, List
 from abc import ABC, abstractmethod
+from copy import deepcopy
 import warnings
-from IPython.display import display
 
+import seaborn as sns
+sns.set_style()
 #improve readability of the output of numpy arrays in jupyter notebooks
 np.set_printoptions(linewidth=150)
 
@@ -59,12 +58,12 @@ def get_inliers(data : np.ndarray, f : float= 4.0, iterative : bool = True, robu
 
 ## SERIE 2
 
-def error_propagation_formula(f : sympy.Matrix|Iterable[sympy.Expr], args : List[sympy.Symbol]) -> Tuple[sympy.Expr, sympy.MatrixSymbol]:
+def error_propagation_formula(f : sympy.Matrix|Iterable[sympy.Expr]|sympy.Expr, args : List[sympy.Symbol]) -> Tuple[sympy.Expr, sympy.MatrixSymbol]:
     """
     Computes symbolic error propagation A K A^T and returns it with symbolic covariance K.
 
     Args:
-        f: Vector-valued expression (Matrix or iterable).
+        f: Vector-valued expression (Matrix, iterable, or expression).
         args: Variables for Jacobian computation.
 
     Returns:
@@ -72,21 +71,34 @@ def error_propagation_formula(f : sympy.Matrix|Iterable[sympy.Expr], args : List
     """
     
     if not isinstance(f, sympy.Matrix):
-        #assume that f is an iterable of expressions if it is not already a matrix
-        #in this case it should be possible to simply convert into a column matrix
+        if isinstance(f, sympy.Expr):
+            f = [f]
+        
         f = sympy.Matrix(list(f))
     
     A = f.jacobian(args)
     K = sympy.MatrixSymbol('K',len(args), len(args))
     return A * K * A.T , K #skript S.12
 
-def propagate_error(f : sympy.Matrix|Iterable[sympy.Expr], args_symbols : List[sympy.Symbol], args : np.ndarray, cov : np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+def propagate_error(f : sympy.Matrix|Iterable[sympy.Expr]|sympy.Expr, args_symbols : Iterable[sympy.Symbol], args : np.ndarray, cov : np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+    """
+    Propagates error through a function using the covariance matrix.
+    
+    Args:
+        f: Vector-valued expression (Matrix, iterable, or expression).
+        args_symbols: Variables for Jacobian computation.
+        args: Values of the variables along the first dimension.
+        cov: Covariance matrix of the variables.
+    
+    Returns:
+        (Result of the function, propagated covariance matrix).
+    """
     cov_expr, K = error_propagation_formula(f, args_symbols)
     result = sympy.lambdify(args_symbols, f)(*args)
     result_cov = sympy.lambdify([*args_symbols, K],cov_expr)(*args, cov)
     return (result, result_cov)
 
-def matrix_quiver(x : np.ndarray, y: np.ndarray, matrices : np.ndarray, shade_determinant = False, label = None, det_label = None):
+def matrix_quiver(x : np.ndarray, y: np.ndarray, matrices : np.ndarray, shade_determinant = False, label = None, det_label = None, c = 'black'):
     """
     Plots eigenvectors of 2x2 matrices as quivers. Can shade background by determinant.
 
@@ -109,11 +121,10 @@ def matrix_quiver(x : np.ndarray, y: np.ndarray, matrices : np.ndarray, shade_de
     
     if shade_determinant:
         mesh = plt.pcolormesh(x, y, determinants)
-        if det_label is not None:
-            plt.colorbar(mesh, label = det_label)
+        plt.colorbar(mesh, label = det_label)
 
-    q1 = plt.quiver(x, y, scaled_eigenvectors[...,0,0], scaled_eigenvectors[...,1,0], **EIGEN_VEC_QUIVER_KWARGS)
-    q2 = plt.quiver(x, y, scaled_eigenvectors[...,0,1], scaled_eigenvectors[...,1,1], **EIGEN_VEC_QUIVER_KWARGS)
+    q1 = plt.quiver(x, y, scaled_eigenvectors[...,0,0], scaled_eigenvectors[...,1,0], **EIGEN_VEC_QUIVER_KWARGS, c = c)
+    q2 = plt.quiver(x, y, scaled_eigenvectors[...,0,1], scaled_eigenvectors[...,1,1], **EIGEN_VEC_QUIVER_KWARGS, c = c)
     
     # needed to ensure proper scaling of the eigenvector arrows
     scale = max(q1.scale,q2.scale)
@@ -122,36 +133,40 @@ def matrix_quiver(x : np.ndarray, y: np.ndarray, matrices : np.ndarray, shade_de
     
     if label is not None:
         #add empty scatter plot to add label, is a little hacky but works
-        plt.scatter([],[],marker = r'+',label = label, color = 'black')
+        plt.scatter([],[],marker = r'+',label = label, c = c)
 
 
 # Serie 3&4
-# I chose to delete the direct method since it is not noticably more efficient and bloats the code 
-
 class FunctionalModel(ABC):
     """
     Abstract base class for parametric models fitted with weighted least squares.
 
     Stores all intermediate computations for transparency and debugging.
-    
-    Mutliple functions accept sigma as argument, for these functions the default is sigma = m_0 tha a posteriory weight.
-    If you are only interested in the cofactors, just pass sigma = 1, if you have sigma a priori, pass it excplicitally.
     """
     
-    # These parameters can be set expcicitally
+    ### Public fields
+    
+    # defines break conditions for the iterative process
     max_iter : int = 10_000
     epsilon : float = 1e-4
     
-    parameters : np.ndarray # set this field to define initial parameters before calling fit()
+    # used to provide nicer outputs, needs to be set by the implementation
+    parameter_symbols : List[sympy.Symbol]
     
+    # is called after each iteration, can be used to print or log the current state of the model
+    # default is a no-op, but can be set to a function that takes the model as argument
     logger : Callable = lambda *args : None
     
-    # These are read only and should not be changed from outside the class
+    # defines the initial parameters, can be set before calling fit() to define initial parameters
+    # default value is determined by implementation
+    parameters : np.ndarray 
+    
+    ### Readonly fields
     iterations : int = 0
     
     x : np.ndarray #observed x
     y : np.ndarray #observed y
-    P : scipy.sparse.dia_array # weighting matrix
+    P : scipy.sparse.dia_matrix # weighting matrix
     
     A : np.ndarray # design matrix
     
@@ -163,20 +178,21 @@ class FunctionalModel(ABC):
 
     y_pred : np.ndarray
     
+    residuals : np.ndarray
+    
+        
     @property
     def dof(self):
         return len(self.x) - len(self.parameters)
     
-    @property
-    def residuals(self) -> np.ndarray:
-        # observed minus computed
-        return self.y-self.y_pred
     
-    
-    def fit(self, x : np.ndarray, y : np.ndarray, weight_matrix: scipy.sparse.dia_array|None = None):
+    def fit(self, x : np.ndarray, y : np.ndarray, weight_matrix: scipy.sparse.dia_matrix|None = None):
         """
         Fits model to data using iterative weighted least squares.
         """
+        
+        if self.parameters is None:
+            raise Exception('Cannot fit, because self.parameters is None, set your initial parameters!')
         
         # make sure x and y are arrays
         self.x = np.asarray(x)
@@ -184,7 +200,7 @@ class FunctionalModel(ABC):
         
         # by default use the identity matrix as weight matrix 
         if weight_matrix is None:
-            weight_matrix = scipy.sparse.eye_array(len(x), len(x))
+            weight_matrix = scipy.sparse.diags(np.ones(len(x)))
         
         self.P = weight_matrix
         
@@ -197,16 +213,17 @@ class FunctionalModel(ABC):
             # First compute the design matrix, this depends on the implementation of the functional model
             self.A = self.get_design_matrix(x)
             
-            # Then use the normal equations to compute the change in the parameterss
+            # Then use the normal equations to compute the change in the parameters
             self.normal_matrix = self.A.T @ self.P @ self.A
             # use P.dot() since it is more efficient here to compute from right to left (because the intermediate matrix doesn't need to be stored)
             self.b = self.A.T @ self.P.dot(self.y - self.y_pred)
         
             self.delta_parameters = np.linalg.solve(self.normal_matrix, self.b)
             
-            # Update the parameters and assiciated values
+            # Update the parameters and associated values
             self.parameters = self.parameters + self.delta_parameters
             self.y_pred = self.eval(self.x)
+            self.residuals = self.y - self.y_pred
             self.m_0 = np.sqrt((self.residuals.T @ self.P @ self.residuals) / (self.dof))
             
             # Finally call the logger, this allows selective printing and more
@@ -219,82 +236,96 @@ class FunctionalModel(ABC):
         if self.iterations == self.max_iter:
             warnings.warn("The Functional Model did not converge, make sure you set reasonable initial parameters")
     
-    def parameter_cov(self, sigma = None) -> np.ndarray:
-        """
-        Returns covariance matrix of the fitted parameters.
-        """
-        if sigma is None:
-            sigma = self.m_0
-        return sigma**2 * np.linalg.inv(self.normal_matrix)
+    def parameter_cof(self) -> np.ndarray:
+        return np.linalg.inv(self.normal_matrix)
     
-    def parametter_corr(self) -> np.ndarray:
-        cofactor_matrix = self.parameter_cov(1)
+    def parameter_corr(self) -> np.ndarray:
+        cofactor_matrix = self.parameter_cof()
         diag = cofactor_matrix.diagonal()**0.5
         return cofactor_matrix / np.outer(diag, diag)
-        
     
-    def eval_cov(self, x : np.ndarray, sigma : float = None) -> np.ndarray:
-        """
-        Returns full covariance of model predictions at x.
-        """
+    def eval_cof(self, x : np.ndarray) -> np.ndarray:
         A = self.get_design_matrix(x)
-        return A@self.parameter_cov(sigma)@A.T
+        return A@self.parameter_cof()@A.T
     
-    def eval_cov_diags(self, x : np.ndarray, sigma : float = None) -> np.ndarray:
+    def eval_stderr(self, x : np.ndarray, sigma) -> np.ndarray:
         """
-        Returns only the diagonal of the covariance matrix of the prediction at x.
-        """
-        A = self.get_design_matrix(x)
-        # if we only care about the diagonal, it is more efficient to compute the sum directly
-        return np.einsum('ij,jk,ki -> i', A, self.parameter_cov(sigma), A.T)
-
-    
-    def chi2_statistic(self, sigma_0 : float = 1) -> float:
-        """
-        Computes the chi-squared test statistic.
-        """
-        # apply the methods as in the script chapter 4.11
-        return (self.m_0 / sigma_0)**2 * self.dof
-    
-    def chi2_critical_value(self, alpha : float = 0.05) -> float:
-        """
-        Computes the chi-squared critical value, at a given significance alpha
-        """
-        return stats.chi2.ppf(1 - alpha, self.dof)
-    
-    def plot(self, sigma : float = 1, c_data = 'b', c_model = 'black'):
-        """
-        Plots the data points and the fitted model.
+        Returns only the diagonal of the covariance of the prediction at x. sigma determines the scale of the covariance, default is m_0.
         """
         if sigma is None:
             sigma = self.m_0
+        A = self.get_design_matrix(x)
+        # if we only care about the diagonal, it is more efficient to compute the sum directly
+        return sigma * np.einsum('ij,jk,ki -> i', A, self.parameter_cof(), A.T)**0.5
+
+    def chi2_threshold(self, alpha : float = 0.05) -> float:
+        """
+        Computes the threshold for chi-squared test, at a given significance alpha.
+        This is the mean normalized critical value X^2(dof) / dof
+        This value then needs to be compared to m_0^2 / sigma_0^2
+        NOTE: You're not "accepting" larger errors for smaller alpha you're demanding stronger evidence to reject the model.
+        """
+        return stats.chi2.ppf(1 - alpha, self.dof) / self.dof
+    
+    def plot(self, sigma_0 : float = 1, sigma : float = None, c_data = 'b', c_model = 'black'):
+        """
+        Plots the data points and the fitted model.
+        The data points are shown with error bars, the model is shown as a line with shaded area for the covariance.
+        Args:
+            sigma_0: the scale of the covariance of the data points, default is 1 (assuming P = Cov^-1).
+            sigma: the scale of the covariance of the model parameters, default is max(sigma_0, m_0).
+            c_data: color of the data points, default is blue.
+            c_model: color of the model, default is black.
+        """
+        if sigma is None:
+            sigma = max(sigma_0, self.m_0)
         
-        plt.errorbar(x = self.x, y = self.y, yerr=sigma * self.P.diagonal()**(-0.5),fmt = '.', label='data',color= c_data)
+        # this could be made more efficient by using the covariance matrix directly, 
+        # but this is more readable. I'll change it later if needed
+        y_stderr = sigma_0 * scipy.sparse.linalg.inv(self.P.tocsc()).diagonal()**0.5
+        plt.errorbar(x = self.x, y = self.y, yerr=y_stderr,fmt = '.', label='data',color= c_data)
         
-        #use the max of sigma_0 and m_0
-        sigma = max(sigma, self.m_0)
-        
-        plt.errorbar(self.x, self.y_pred, self.eval_cov_diags(self.x, sigma)**0.5, fmt = '.',color= c_model, label='model prediction')
+        # use sigma to scale the covariance of the predictions
+        plt.errorbar(self.x, self.y_pred, self.eval_stderr(self.x, sigma), fmt = '.',color= c_model, label='model prediction')
         
         linspace = np.linspace(self.x.min(), self.x.max(), 200)
         y = self.eval(linspace)
-        stderr = self.eval_cov_diags(linspace, sigma)**0.5          
+        eval_stderr = self.eval_stderr(linspace, sigma)          
         plt.plot(linspace, y,color= c_model, alpha = 0.5)
-        plt.fill_between(linspace, y-stderr, y+stderr,color= c_model, alpha = 0.2)
+        plt.fill_between(linspace, y-eval_stderr, y+eval_stderr,color= c_model, alpha = 0.2)
         plt.legend()
     
-    def data_frame(self, sigma = None) -> pd.DataFrame:
+    def show_correlation(self):
         """
-        Creates a dataframe containing x, y, weights of x, predicted y, residuals and covariance of y
+        Plots the correlation matrix of the parameters.
         """
-        return pd.DataFrame({
-            'x' : self.x,
-            'x_weight' : self.P.diagonal(),
-            'y' : self.y,
-            'y_pred' : self.y_pred,
-            'residuals' : self.residuals,
-            'y_cov' : self.eval_cov_diags(self.x, sigma)
-        })
+        matshow = plt.matshow(self.parameter_corr())
+        plt.colorbar(matshow, label = 'correlation')
+        n_ticks = len(self.parameter_symbols)
+        plt.gca().xaxis.set_label_position('top')
+        plt.xlabel('parameter')
+        plt.ylabel('parameter')
+        ticks = [f'${sympy.latex(s)}$' for s in self.parameter_symbols]
+        plt.xticks(range(n_ticks), ticks)
+        plt.yticks(range(n_ticks), ticks)
+    
+    def print_parameters_latex(self, precision : int = 3, sigma : float = None):
+        """
+        Prints the parameters and their uncertainties in LaTeX format.
+        sigma is the scale of the covariance, default is m_0.
+        Args:
+            precision: number of decimal places to print, default is 3.
+        """
+        if sigma is None:
+            sigma = self.m_0
+        for s, v, e in zip(self.parameter_symbols, self.parameters, sigma*np.sqrt(np.diag(self.parameter_cof()))):
+            print(f"${sympy.latex(s)} = {v:.{precision}f} \\pm {e:.{precision}f}$")
+    
+    def copy(self):
+        """
+        Returns a deep copy of the model.
+        """
+        return deepcopy(self)
     
     @abstractmethod
     def eval(self, x : np.ndarray) -> np.ndarray:
@@ -309,55 +340,17 @@ class FunctionalModel(ABC):
         Computes and returns the design matrix for the inputs x. Needs Implementation.
         """
         pass
-    
-    
-    def display_summary(self, sigma_0 : float = 1, sigma : float = None):
-        # if sigma is not defined, choose the max of sigma_0 and m_0
-        if sigma is None:
-            sigma = max(sigma_0, self.m_0)
         
-        # print m_0 and sigma_0
-        print(f'sigma_0 = {sigma_0}')
-        print(f'm_0 = {self.m_0}')
-        print(f'sigma_0 / m_0 = {sigma_0 / self.m_0:.2f}')
-        print(f'sigma = {sigma:.2f}')
-        
-        # display basic information about the model
-        print(f'degrees of freedom f = n-u = {self.dof}')
-        print(f'parameters:')
-        display(self.parameters)
-        print(f'parameter covariance:')
-        display(self.parameter_cov(sigma))
-        
-        display(self.data_frame(sigma))
-        
-        # plot of the fit
-        self.plot(sigma)
-        plt.show()
-        
-        # plot the covariance matrix
-        plt.title('covariance matrix of the parameters')
-        mat = plt.gca().matshow(self.parameter_cov(sigma))
-        plt.colorbar(mat)
-        plt.show()
-        
-        # print the relevant statistics
-        print(f'chi2 statistic : {self.chi2_statistic(sigma_0):.2f}')
-        print(f'critical values for {self.dof} degrees of freedom')
-        alphas = [0.1,0.05,0.01]
-        for a in alphas:
-            print(f'x(alpha = {a:.2f}) = {self.chi2_critical_value(a):.2f}')
-        
-    
 class PolyFunctionalModel(FunctionalModel):
-    
-    # In this case the off diagonal elements of the Weighting matrix are ignored!
     degree : int
     
     def __init__(self, degree : int):
         self.degree = degree
+        
         #set initial parameters to zero by default
         self.parameters = np.zeros(degree+1)
+        #set parameters symbols to a_0, a_1, ..., a_n (reversed order for integration with numpy)
+        self.parameter_symbols = [sympy.Symbol(f'a_{i}') for i in reversed(range(degree+1))]
     
     def get_design_matrix(self, x : np.ndarray) -> np.ndarray:
         return np.column_stack([x**i for i in reversed(range(self.degree+1))])
@@ -368,11 +361,10 @@ class PolyFunctionalModel(FunctionalModel):
 
 class SympyFunctionalModel(FunctionalModel):
     function_expr : sympy.Expr
-    parameter_symbols : List[sympy.Symbol]
     feature_symbol : sympy.Symbol
     
     differential_expressions : List[sympy.Expr]
-    differentials : List[Callable]
+    differentials : List[Callable] # store these for debugging and transparancy
     lambdified : Callable
     
     design_matrix : np.ndarray
@@ -392,51 +384,15 @@ class SympyFunctionalModel(FunctionalModel):
         self.parameters = np.zeros(len(parameter_symbols))
     
     def eval(self, x : np.ndarray) -> np.ndarray:
+        # asarray because i don't trust myself to not use lists or pd.Series
         x = np.asarray(x)
         return np.broadcast_to(self.lambdified(*self.parameters, x), x.shape)
     
     def get_design_matrix(self, x : np.ndarray) -> np.ndarray:
         x = np.asarray(x)
-        # the collumns of the design matrix are the partial derivatives of the function with respect to each parameter
+        # the columns of the design matrix are the partial derivatives of the function with respect to each parameter
         # evaluated at the input x, and the current parameters
-        # broadcastring the result is necessary because sometimes the lambdified function returns a scalar (if the function is constant)
-        A_collumns = [np.broadcast_to(d(*self.parameters, x), x.shape) for d in self.differentials]
+        # broadcasting the result is necessary because sometimes the lambdified function returns a scalar (if the function is constant)
+        A_columns = [np.broadcast_to(d(*self.parameters, x), x.shape) for d in self.differentials]
         
-        return np.column_stack(A_collumns)
-    
-    def show_correlation(self):
-        matshow = plt.matshow(self.parametter_corr())
-        plt.colorbar(matshow, label = 'correlation')
-        n_ticks = len(self.parameter_symbols)
-        ticks = [f'${sympy.latex(s)}$' for s in self.parameter_symbols]
-        plt.xlabel('parameter')
-        plt.gca().xaxis.set_label_position('top')
-        plt.ylabel('parameter')
-        plt.xticks(range(n_ticks), ticks)
-        plt.yticks(range(n_ticks), ticks)
-
-
-
-def fit_inliers(model : FunctionalModel, x : np.ndarray, y : np.ndarray, cofactor_matrix : np.ndarray, get_inliers_args : Dict = None) -> np.ndarray:
-    """
-    fits a model and iteratively removes outliers via the normalized residuals.
-    returns the final inliers
-    """
-    if get_inliers_args is None:
-        get_inliers_args = {}
-    
-    inliers = np.ones_like(x, bool)
-    
-    weights = cofactor_matrix.diagonal() ** (-0.5)
-    
-    while True:
-        inlier_cofactor_matrix = cofactor_matrix[inliers,:][:,inliers]
-        weight_matrix = scipy.sparse.dia_array(np.linalg.inv(inlier_cofactor_matrix))
-        model.fit(x[inliers], y[inliers], weight_matrix)
-        new_inliers = get_inliers((model.eval(x) - y) * weights, **get_inliers_args)
-        
-        if np.all(new_inliers == inliers):
-            break
-        inliers = new_inliers
-    
-    return inliers
+        return np.column_stack(A_columns)
