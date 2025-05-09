@@ -109,7 +109,7 @@ def matrix_quiver(x : np.ndarray, y: np.ndarray, matrices : np.ndarray, shade_de
         label: Label for quiver vectors.
         det_label: Label for colorbar if shading is enabled.
     """
-    #remove the arrowheads and set the pivot to mid to vizualize eigenvectors
+    #remove the arrowheads and set the pivot to mid to visualize eigenvectors
     EIGEN_VEC_QUIVER_KWARGS = {'headwidth' : 0, 'headlength' : 0, 'headaxislength' : 0, 'pivot' : 'mid'}
     
     eigenvalues, eigenvectors = np.linalg.eig(matrices)
@@ -217,8 +217,9 @@ class FunctionalModel(ABC):
             self.normal_matrix = self.A.T @ self.P @ self.A
             # use P.dot() since it is more efficient here to compute from right to left (because the intermediate matrix doesn't need to be stored)
             self.b = self.A.T @ self.P.dot(self.y - self.y_pred)
-        
-            self.delta_parameters = np.linalg.solve(self.normal_matrix, self.b)
+
+            #use lstsq instead of inv to avoid computing the inverse and handle singular normal matrices
+            self.delta_parameters = np.linalg.lstsq(self.normal_matrix, self.b)
             
             # Update the parameters and associated values
             self.parameters = self.parameters + self.delta_parameters
@@ -263,7 +264,8 @@ class FunctionalModel(ABC):
         Computes the threshold for chi-squared test, at a given significance alpha.
         This is the mean normalized critical value X^2(dof) / dof
         This value then needs to be compared to m_0^2 / sigma_0^2
-        NOTE: You're not "accepting" larger errors for smaller alpha you're demanding stronger evidence to reject the model.
+        
+        NOTE: for smaller alphas you're not "accepting" larger errors, you're demanding stronger evidence to reject the model.
         """
         return stats.chi2.ppf(1 - alpha, self.dof) / self.dof
     
