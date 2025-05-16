@@ -1,10 +1,9 @@
 import numpy as np
 import matplotlib.pyplot as plt
 import scipy.sparse
-from scipy.sparse import linalg
 import sympy
 from scipy import stats
-from typing import Callable, Dict, Iterable, Tuple, List
+from typing import Callable, Iterable, Tuple, List
 from abc import ABC, abstractmethod
 from copy import deepcopy
 import warnings
