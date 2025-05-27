@@ -97,7 +97,6 @@ def matrix_quiver(x : np.ndarray, y: np.ndarray, matrices : np.ndarray, shade_de
         shade_determinant (bool): If True, shades the plot based on the determinant of the matrices.
         label (str): Label for the eigenvectors. optional defaults to None
         det_label (str): Label for the determinant. optional defaults to None
-        scale (float): Scale for the quiver plot. Default is 'auto'.
     Returns:
         None
     """

@@ -1,16 +1,12 @@
 import numpy as np
 import matplotlib.pyplot as plt
 import scipy.sparse
-from scipy.sparse import linalg
 import sympy
 from scipy import stats
-from typing import Callable, Dict, Iterable, Tuple, List
+from typing import Callable, Iterable, Tuple, List, Literal
 from abc import ABC, abstractmethod
 from copy import deepcopy
 import warnings
-
-import seaborn as sns
-sns.set_style()
 #improve readability of the output of numpy arrays in jupyter notebooks
 np.set_printoptions(linewidth=150)
 
@@ -56,11 +52,36 @@ def get_inliers(data : np.ndarray, f : float= 4.0, iterative : bool = True, robu
         
     return inliers
 
+def mjd_to_datetime(
+    mjd: np.ndarray,
+    start: np.datetime64 = None
+) -> np.ndarray:
+    """
+    Parses Modified Julian Date (MJD) to datetime64[ns] or timedelta64[ns].
+
+    Args:
+        mjd: Array of MJD values (float or int).
+        start: Optional custom start date. Only used if mode="datetime".
+               If None, defaults to MJD epoch (1858-11-17).
+               If 0 returns timedelta64[ns] from MJD epoch.
+
+    Returns:
+        Array of datetime64[ns] or timedelta64[ns] values.
+    """
+    mjd_ns = (np.asarray(mjd, dtype=np.float64) * 86_400_000_000_000).astype("timedelta64[ns]")
+    
+    if start is None:
+        start = np.datetime64("1858-11-17T00:00:00", "ns")
+    
+    return start + mjd_ns
+   
+
 ## SERIE 2
 
 def error_propagation_formula(f : sympy.Matrix|Iterable[sympy.Expr]|sympy.Expr, args : List[sympy.Symbol]) -> Tuple[sympy.Expr, sympy.MatrixSymbol]:
     """
     Computes symbolic error propagation A K A^T and returns it with symbolic covariance K.
+    should not be used direkctly most of the time, use propagate_error instead.
 
     Args:
         f: Vector-valued expression (Matrix, iterable, or expression).
@@ -78,6 +99,8 @@ def error_propagation_formula(f : sympy.Matrix|Iterable[sympy.Expr]|sympy.Expr, 
     
     A = f.jacobian(args)
     K = sympy.MatrixSymbol('K',len(args), len(args))
+    # these are sympy expressions, so we need the asteriks * to multiply them
+    # this is the same as A @ K @ A.T in numpy, but sympy doesn't support the @ operator
     return A * K * A.T , K #skript S.12
 
 def propagate_error(f : sympy.Matrix|Iterable[sympy.Expr]|sympy.Expr, args_symbols : Iterable[sympy.Symbol], args : np.ndarray, cov : np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
@@ -166,7 +189,7 @@ class FunctionalModel(ABC):
     
     x : np.ndarray #observed x
     y : np.ndarray #observed y
-    P : scipy.sparse.dia_matrix # weighting matrix
+    P : scipy.sparse.spmatrix # weighting matrix
     
     A : np.ndarray # design matrix
     
@@ -186,7 +209,7 @@ class FunctionalModel(ABC):
         return len(self.x) - len(self.parameters)
     
     
-    def fit(self, x : np.ndarray, y : np.ndarray, weight_matrix: scipy.sparse.dia_matrix|None = None):
+    def fit(self, x : np.ndarray, y : np.ndarray, weight_matrix: scipy.sparse.spmatrix|None = None):
         """
         Fits model to data using iterative weighted least squares.
         """
@@ -201,6 +224,7 @@ class FunctionalModel(ABC):
         # by default use the identity matrix as weight matrix 
         if weight_matrix is None:
             weight_matrix = scipy.sparse.diags(np.ones(len(x)))
+        weight_matrix = scipy.sparse.csr_matrix(weight_matrix)
         
         self.P = weight_matrix
         
@@ -215,13 +239,12 @@ class FunctionalModel(ABC):
             
             # Then use the normal equations to compute the change in the parameters
             self.normal_matrix = self.A.T @ self.P @ self.A
-            # use P.dot() since it is more efficient here to compute from right to left (because the intermediate matrix doesn't need to be stored)
+            # use P.dot() since it is more efficient here to compute from right to left 
+            # (because the intermediate matrix doesn't need to be stored and the sparse matrix might improve performance)
             self.b = self.A.T @ self.P.dot(self.y - self.y_pred)
 
-            # use lstsq instead of inv to avoid computing the inverse and handle singular normal matrices
+            # use lstsq instead of inv to avoid computing the inverse and handle singular normal matrix
             self.delta_parameters = np.linalg.lstsq(self.normal_matrix, self.b)[0]
-            # previously i used the following line, but it is less efficient and less stable
-            # self.delta_parameters = np.linalg.inv(self.normal_matrix, self.b)
             
             # Update the parameters and associated values
             self.parameters = self.parameters + self.delta_parameters
@@ -271,7 +294,14 @@ class FunctionalModel(ABC):
         """
         return stats.chi2.ppf(1 - alpha, self.dof) / self.dof
     
-    def plot(self, sigma_0 : float = 1, sigma : float = None, c_data = 'b', c_model = 'black'):
+    def plot(self, 
+             sigma_0 : float = 1, 
+             sigma : float = None, 
+             c_data = 'b', 
+             c_model = 'black', 
+             y_stderr : np.ndarray = None, 
+             show_errorband = True
+            ):
         """
         Plots the data points and the fitted model.
         The data points are shown with error bars, the model is shown as a line with shaded area for the covariance.
@@ -280,32 +310,49 @@ class FunctionalModel(ABC):
             sigma: the scale of the covariance of the model parameters, default is max(sigma_0, m_0).
             c_data: color of the data points, default is blue.
             c_model: color of the model, default is black.
+            y_stderr: standard error of the data points, if None it is computed from sigma_0 and P.
+                 Needs to be provided if the number of data points is large.
+            show_errorband: if True, the model prediction is shown with a shaded area for the covariance.
         """
         if sigma is None:
             sigma = max(sigma_0, self.m_0)
         
-        # this could be made more efficient by using the covariance matrix directly, 
-        # but this is more readable. I'll change it later if needed
-        y_stderr = sigma_0 * scipy.sparse.linalg.inv(self.P.tocsc()).diagonal()**0.5
+        if y_stderr is None:
+            # compute the standard error of the data points
+            # this is the square root of the diagonal of the covariance matrix
+            # which is sigma_0 * P^-1
+            y_stderr = sigma_0 * np.sqrt(np.diagonal(np.linalg.inv(self.P.todense())))
         plt.errorbar(x = self.x, y = self.y, yerr=y_stderr,fmt = '.', label='data',color= c_data)
         
         # use sigma to scale the covariance of the predictions
-        plt.errorbar(self.x, self.y_pred, self.eval_stderr(self.x, sigma), fmt = '.',color= c_model, label='model prediction')
+        y_pred_stderr = self.eval_stderr(self.x, sigma)
+        plt.errorbar(self.x, self.y_pred, y_pred_stderr, fmt = '.',color= c_model, label='model prediction')
         
         linspace = np.linspace(self.x.min(), self.x.max(), 200)
         y = self.eval(linspace)
-        eval_stderr = self.eval_stderr(linspace, sigma)          
         plt.plot(linspace, y,color= c_model, alpha = 0.5)
-        plt.fill_between(linspace, y-eval_stderr, y+eval_stderr,color= c_model, alpha = 0.2)
+
+        if show_errorband: 
+            eval_stderr = self.eval_stderr(linspace, sigma)          
+            plt.fill_between(linspace, y-eval_stderr, y+eval_stderr,color= c_model, alpha = 0.2)
         plt.legend()
     
-    def show_correlation(self):
+    def show_correlation(self, parameter_ticks : bool = None):
         """
         Plots the correlation matrix of the parameters.
         """
         matshow = plt.matshow(self.parameter_corr())
         plt.colorbar(matshow, label = 'correlation')
-        if self.parameter_symbols is not None:
+        
+        # set the ticks to the parameter symbols if they are available
+        # and the number of parameters is small enough
+        if parameter_ticks is None:
+            if self.parameter_symbols is None:
+                parameter_ticks = False
+            else:
+                parameter_ticks = len(self.parameter_symbols) < 10
+
+        if parameter_ticks:
             n_ticks = len(self.parameter_symbols)
             ticks = [f'${sympy.latex(s)}$' for s in self.parameter_symbols]
             plt.xticks(range(n_ticks), ticks)
@@ -360,7 +407,7 @@ class PolyFunctionalModel(FunctionalModel):
         
         #set initial parameters to zero by default
         self.parameters = np.zeros(degree+1)
-        #set parameters symbols to a_0, a_1, ..., a_n (reversed order for integration with numpy)
+        #set parameters symbols to a_n, ..., a_0 (reversed order for integration with numpy)
         self.parameter_symbols = [sympy.Symbol(f'a_{i}') for i in reversed(range(degree+1))]
     
     def get_design_matrix(self, x : np.ndarray) -> np.ndarray:
@@ -377,8 +424,6 @@ class SympyFunctionalModel(FunctionalModel):
     differential_expressions : List[sympy.Expr]
     differentials : List[Callable] # store these for debugging and transparancy
     lambdified : Callable
-    
-    design_matrix : np.ndarray
     
     def __init__(self, function_expr : sympy.Expr, parameter_symbols : List[sympy.Symbol], feature_symbol : sympy.Symbol):
         self.function_expr = function_expr
@@ -407,3 +452,103 @@ class SympyFunctionalModel(FunctionalModel):
         A_columns = [np.broadcast_to(d(*self.parameters, x), x.shape) for d in self.differentials]
         
         return np.column_stack(A_columns)
+        
+# Serie 5
+def savitzki_golay_filter(y: np.ndarray, deg: int = 1, window: int = None, edge: Literal['pad', 'polynomial', 'none'] = 'polynomial') -> np.ndarray:
+    """
+    Applies a Savitzki-Golay filter to the input data y.
+    Args:
+        y: Input data to be filtered.
+        deg: Degree of the polynomial to fit, default is 1 (linear).
+        window: Size of the window to use for the filter, must be odd. If None, it will be set to deg*2+1.
+        edge: How to handle the edges of the data. Options are 'pad', 'polynomial', or 'none'.
+            'pad' will pad the data with the edge values,
+            'polynomial' will use the polynomial coefficients of the first and last window to compute the start and end of the filtered signal.
+            'none' will not handle the edges and return only the valid part of the convolution. in this case the return size will be len(y) - window + 1.
+    Returns:
+        filtered: The filtered data.
+    """
+    
+    if window is None:
+        window = deg*2+1
+    
+    assert window % 2 == 1, "Window size must be odd"
+
+    radius = window // 2
+
+    A = np.array([[j**i for i in range(deg+1)] for j in range(-radius, radius+1)])
+    B = np.linalg.inv(A.T @ A) @ A.T
+    
+    match edge:
+        case 'pad':
+            y = np.pad(y, (radius, radius), mode='edge')
+            filtered = np.convolve(B[0,:], y, mode='valid')
+        case 'polynomial':
+            # use the polynomial coefficients to compute the start and end of the filtered signal
+            unproblematic_part = np.convolve(B[0,:], y, mode = 'valid')
+            start_params = B @ y[:window]
+            end_params = B @ y[-window:]
+            start = np.polyval(start_params[::-1], np.arange(-radius, 0))
+            end = np.polyval(end_params[::-1], np.arange(1, radius+1))
+            filtered = np.concatenate((start, unproblematic_part, end))
+        case 'none':
+            filtered = np.convolve(B[0,:], y, mode = 'valid')
+
+    return filtered
+
+
+def fft_to_coeffs(fft : np.ndarray, m = None) -> np.ndarray:
+    """
+    Converts the FFT coefficients to the coefficients of the polynomial.
+    The coefficients are returned in the order a_0, a_1, ..., a_m, b_1, b_2, ... b_m 
+    """
+    fft /= len(fft)
+    if m is None:
+        m = len(fft) // 2
+    coeffs = np.zeros(2*m+1)
+    coeffs[0] = fft[0].real
+    coeffs[1:m+1] = 2*fft[1:m+1].real
+    coeffs[m+1:] = -2*fft[1:m+1].imag
+    return coeffs
+
+def coeffs_to_amplitude(coeffs : np.ndarray) -> np.ndarray:
+    """
+    Converts the coefficients of the polynomial to the amplitudes of the Fourier series.
+    The coefficients are assumed to be in the order a_0, a_1, ..., a_m, b_1, b_2, ... b_m
+    """
+    m = len(coeffs) // 2
+    assert len(coeffs) == 2*m+1, "coeffs must be of length 2*m+1"
+    return np.concatenate((coeffs[0:1], np.sqrt(coeffs[1:m+1]**2 + coeffs[m+1:]**2)))
+
+def amplitude_spectrum_via_numpy(y : np.ndarray, m : int = None, d : float = 1) -> Tuple[np.ndarray, np.ndarray]:
+    """
+    Computes the amplitude spectrum of the data using numpy's fft.
+    The amplitude is normalized by the length of the data, therefore corresponding to the factors of the discrete fourier transform.
+    Returns:
+        frequencies: Frequencies of the amplitude spectrum.
+        amplitudes: Amplitudes of the amplitude spectrum.
+    """
+    if m is None:
+        m = len(y) // 2
+    fft = np.fft.fft(y)
+    coeffs = fft_to_coeffs(fft, m) 
+    amplitudes = coeffs_to_amplitude(coeffs)
+    frequencies = np.arange(m+1) / (d * len(y))
+    return frequencies, amplitudes
+def discrete_fourier_transform(y : np.ndarray, m) -> np.ndarray:
+    """
+    Computes the discrete fourier transform of the data using a design matrix.
+    The coefficients are returned in the order a_0, a_1, ..., a_m, b_1, b_2, ... b_m 
+    """
+    x = np.arange(len(y))
+    base_frequency = 2*np.pi/len(y)
+    # compute the design matrix
+    A = np.column_stack(
+            [np.cos(i*x*base_frequency) for i in range(0,m+1)]+
+            [np.sin(i*x*base_frequency) for i in range(1,m+1)]
+        )
+    
+    # compute the coefficients
+    coeffs = np.linalg.inv(A.T @ A) @ A.T @ y
+    
+    return coeffs
