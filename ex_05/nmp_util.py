@@ -263,7 +263,7 @@ class FunctionalModel(ABC):
             if np.all(np.abs(self.delta_parameters) < self.epsilon):
                 break
         
-        if self.iterations == self.max_iter:
+        if not np.all(np.abs(self.delta_parameters) < self.epsilon):
             warnings.warn("The Functional Model did not converge, make sure you set reasonable initial parameters")
     
     def parameter_cof(self) -> np.ndarray:
@@ -506,6 +506,7 @@ def fft_to_coeffs(fft : np.ndarray, m = None) -> np.ndarray:
     Converts the FFT coefficients to the coefficients of the polynomial.
     The coefficients are returned in the order a_0, a_1, ..., a_m, b_1, b_2, ... b_m 
     """
+    
     fft /= len(fft)
     if m is None:
         m = len(fft) // 2
@@ -539,6 +540,7 @@ def amplitude_spectrum_via_numpy(y : np.ndarray, m : int = None, d : float = 1) 
     amplitudes = coeffs_to_amplitude(coeffs)
     frequencies = np.arange(m+1) / (d * len(y))
     return frequencies, amplitudes
+
 def discrete_fourier_transform(y : np.ndarray, m) -> np.ndarray:
     """
     Computes the discrete fourier transform of the data using a design matrix.
@@ -556,3 +558,50 @@ def discrete_fourier_transform(y : np.ndarray, m) -> np.ndarray:
     coeffs = np.linalg.inv(A.T @ A) @ A.T @ y
     
     return coeffs
+
+class DFT_FunctionalModel(FunctionalModel):
+    """
+    Functional model for discrete fourier transform.
+    """
+    
+    def __init__(self, m : int):
+        self.m = m
+        self.parameters = np.zeros(2*m+1)
+        self.parameter_symbols = [sympy.Symbol(f'a_{i}') for i in range(m+1)] + [sympy.Symbol(f'b_{i}') for i in range(1,m+1)]
+        self.max_iter = 1 #this is a linear model, so we only need one iteration to fit the parameters
+        self.epsilon = np.inf # we don't need to check for convergence, since we only do one iteration
+    
+    def eval(self, x : np.ndarray) -> np.ndarray:
+        return sum(
+            self.parameters[i] * np.cos(i*x*2*np.pi/len(x)) for i in range(self.m+1)
+        ) + sum(
+            self.parameters[i] * np.sin(i*x*2*np.pi/len(x)) for i in range(self.m+1,2*self.m+1) 
+        ) 
+    
+    def get_design_matrix(self, x : np.ndarray) -> np.ndarray:
+        base_frequency = 2*np.pi/len(x)
+        # compute the design matrix
+        A = np.column_stack(
+            [np.cos(i*x*base_frequency) for i in range(0,self.m+1)]+
+            [np.sin(i*x*base_frequency) for i in range(1,self.m+1)]
+        )
+        return A
+    
+    def amplitudes(self) -> np.ndarray:
+        """
+        Returns the amplitudes of the discrete fourier transform.
+        """
+        return coeffs_to_amplitude(self.parameters)
+    
+    def amplitude_cof(self) -> np.ndarray:
+        """
+        Returns the cofactor matrix of the amplitudes.
+        """
+        # compute the covariance matrix of the parameters
+        parameter_cof = self.parameter_cof()
+        
+        exprs = [self.parameters[0]] + [
+            sympy.sqrt(self.parameters[i]**2 + self.parameters[self.m+1+i]**2) for i in range(1,self.m)
+        ]
+        # compute the standard errors of the amplitudes
+        return propagate_error(exprs, self.parameter_symbols, self.parameters, parameter_cof)[1]
