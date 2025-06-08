@@ -1,9 +1,10 @@
+from collections.abc import Callable, Iterable
+from typing import Literal
 import numpy as np
 import matplotlib.pyplot as plt
 import scipy.sparse
 import sympy
 from scipy import stats
-from typing import Callable, Iterable, Tuple, List, Literal
 from abc import ABC, abstractmethod
 from copy import deepcopy
 import warnings
@@ -78,7 +79,7 @@ def mjd_to_datetime(
 
 ## SERIE 2
 
-def error_propagation_formula(f : sympy.Matrix|Iterable[sympy.Expr]|sympy.Expr, args : List[sympy.Symbol]) -> Tuple[sympy.Expr, sympy.MatrixSymbol]:
+def error_propagation_formula(f : sympy.Matrix|Iterable[sympy.Expr]|sympy.Expr, args : list[sympy.Symbol]) -> tuple[sympy.Expr, sympy.MatrixSymbol]:
     """
     Computes symbolic error propagation A K A^T and returns it with symbolic covariance K.
     should not be used direkctly most of the time, use propagate_error instead.
@@ -103,7 +104,7 @@ def error_propagation_formula(f : sympy.Matrix|Iterable[sympy.Expr]|sympy.Expr, 
     # this is the same as A @ K @ A.T in numpy, but sympy doesn't support the @ operator
     return A * K * A.T , K #skript S.12
 
-def propagate_error(f : sympy.Matrix|Iterable[sympy.Expr]|sympy.Expr, args_symbols : Iterable[sympy.Symbol], args : np.ndarray, cov : np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+def propagate_error(f : sympy.Matrix|Iterable[sympy.Expr]|sympy.Expr, args_symbols : Iterable[sympy.Symbol], args : np.ndarray, cov : np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     """
     Propagates error through a function using the covariance matrix.
     
@@ -178,7 +179,7 @@ class FunctionalModel(ABC):
     epsilon : float = 1e-4
     
     # used to provide nicer outputs, needs to be set by the implementation
-    parameter_symbols : List[sympy.Symbol] = None
+    parameter_symbols : list[sympy.Symbol] = None
     
     # is called after each iteration, can be used to print or log the current state of the model
     # default is a no-op, but can be set to a function that takes the model as argument
@@ -425,11 +426,11 @@ class SympyFunctionalModel(FunctionalModel):
     function_expr : sympy.Expr
     feature_symbol : sympy.Symbol
     
-    differential_expressions : List[sympy.Expr]
-    differentials : List[Callable] # store these for debugging and transparancy
+    differential_expressions : list[sympy.Expr]
+    differentials : list[Callable] # store these for debugging and transparancy
     lambdified : Callable
     
-    def __init__(self, function_expr : sympy.Expr, parameter_symbols : List[sympy.Symbol], feature_symbol : sympy.Symbol):
+    def __init__(self, function_expr : sympy.Expr, parameter_symbols : list[sympy.Symbol], feature_symbol : sympy.Symbol):
         self.function_expr = function_expr
         self.parameter_symbols = parameter_symbols
         self.feature_symbol = feature_symbol
@@ -524,7 +525,7 @@ def coeffs_to_amplitude(coeffs : np.ndarray) -> np.ndarray:
     assert len(coeffs) == 2*m+1, "coeffs must be of length 2*m+1"
     return np.concatenate((coeffs[0:1], np.sqrt(coeffs[1:m+1]**2 + coeffs[m+1:]**2)))
 
-def amplitude_spectrum_via_numpy(y : np.ndarray, m : int = None, d : float = 1) -> Tuple[np.ndarray, np.ndarray]:
+def amplitude_spectrum_via_numpy(y : np.ndarray, m : int = None, d : float = 1) -> tuple[np.ndarray, np.ndarray]:
     """
     Computes the amplitude spectrum of the data using numpy's fft.
     The amplitude is normalized by the length of the data, therefore corresponding to the factors of the discrete fourier transform.
