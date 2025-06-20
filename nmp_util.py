@@ -13,13 +13,13 @@ import scipy.sparse
 import sympy
 from scipy import stats
 import numpy as np
+
 #improve readability of the output of numpy arrays in jupyter notebooks
 np.set_printoptions(linewidth=150)
 
 
-# File i will keep continuously updating during the course, adding usefull functions
-
 ## SERIE 1
+
 def get_inliers(data : np.ndarray, f : float= 4.0, iterative : bool = True, robust = True):
     """
     Returns a boolean mask identifying inliers in `data` based on deviation from mean or median.
@@ -67,7 +67,7 @@ def mjd_to_datetime(
 
     Args:
         mjd: Array of MJD values (float or int).
-        start: Optional custom start date. Only used if mode="datetime".
+        start: Optional custom start date.
                If None, defaults to MJD epoch (1858-11-17).
                If 0 returns timedelta64[ns] from MJD epoch.
 
@@ -169,7 +169,7 @@ def matrix_quiver(x : np.ndarray, y: np.ndarray, matrices : np.ndarray, shade_de
         plt.scatter(None,None,marker = r'+',label = label, color = 'black')
 
 
-# Serie 3&4
+## Serie 3&4
 class FunctionalModel(ABC):
     """
     Abstract base class for parametric models fitted with weighted least squares.
@@ -290,64 +290,51 @@ class FunctionalModel(ABC):
 
     def chi2_threshold(self, alpha : float = 0.05) -> float:
         """
-        Computes the threshold for chi-squared test, at a given significance alpha.
-        This is the mean normalized critical value X^2(dof) / dof
-        This value then needs to be compared to m_0^2 / sigma_0^2
+        Returns the critical value for the reduced chi-squared test at significance level alpha.
 
-        NOTE: for smaller alphas you're not "accepting" larger errors, you're demanding stronger evidence to reject the model.
+        This value is (X^2 / dof), where X^2 is the critical value from the chi-squared distribution with dof = degrees of freedom.
+
+        To test the model, compare the ratio m_0^2 / sigma_0^2 (i.e. the reduced chi-squared statistic) to this threshold.
+        If it is greater, the model is rejected at significance level alpha.
+
+        Note: Smaller alpha means stricter evidence is required to reject the model,
+        not a tolerance for larger errors.
         """
         return stats.chi2.ppf(1 - alpha, self.dof) / self.dof
 
-    def plot(self,
-             sigma_0 : float = 1,
-             sigma : float = None,
-             c_data = 'b',
-             c_model = 'black',
-             show_errorband = True,
-             show_whiskers = None,
-             y_stderr : np.ndarray = None,
-            ):
+    def plot_prediction(self, sigma = None, errorbar = True, kwargs = None):
         """
-        Plots the data points and the fitted model.
-        The data points are shown with error bars, the model is shown as a line with shaded area for the covariance.
-        Args:
-            sigma_0: the scale of the covariance of the data points, default is 1 (assuming P = Cov^-1).
-            sigma: the scale of the covariance of the model parameters, default is max(sigma_0, m_0).
-            c_data: color of the data points, default is blue.
-            c_model: color of the model, default is black.
-            show_errorband: if True, the model prediction is shown with a shaded area for the covariance.
-            show_whiskers: if True, the model prediction is shown with error bars for the standard error.
-            y_stderr: standard error of the data points, if None it is computed from sigma_0 and P.
-                 Needs to be provided if the number of data points is large.
+        Plots the model prediction with error bars.
         """
         if sigma is None:
-            sigma = max(sigma_0, self.m_0)
+            sigma = self.m_0
+        if kwargs is None:
+            kwargs = {'marker' : '.', 'label': 'model prediction', 'color': 'black', 'alpha': 0.5}
 
-        if y_stderr is None:
-            # compute the standard error of the data points
-            # this is the square root of the diagonal of the covariance matrix
-            # which is sigma_0 * P^-1
-            y_stderr = sigma_0 * np.sqrt(np.diagonal(np.linalg.inv(self.P.todense())))
-
-        plt.errorbar(x = self.x, y = self.y, yerr=y_stderr,fmt = '.', label='data',color= c_data)
-
-        if show_whiskers is None:
-            show_whiskers = len(self.x) < 200
-
-        if show_whiskers:
-            y_pred_stderr = self.eval_stderr(self.x, sigma)
-            plt.errorbar(self.x, self.y_pred, y_pred_stderr, fmt = '.',color= c_model, label='model prediction')
+        if not errorbar:
+            plt.scatter(self.x, self.y_pred, **kwargs)
         else:
-            plt.scatter(self.x, self.y_pred, color=c_model, label='model prediction')
+            y_stderr = self.eval_stderr(self.x, sigma)
+            plt.errorbar(self.x, self.y_pred, y_stderr, linestyle = '', **kwargs)
 
-        linspace = np.linspace(self.x.min(), self.x.max(), 200)
+    def plot_prediction_smooth(self, sigma = None, errorband = True, n_points = 200, plt_kwargs = None, fill_kwargs = None):
+        """
+        Plots the model prediction as a smooth line with error band.
+        """
+        if sigma is None:
+            sigma = self.m_0
+        if plt_kwargs is None:
+            plt_kwargs = {'color': 'black', 'label': 'model prediction', 'alpha': 0.5}
+        if fill_kwargs is None:
+            fill_kwargs = {'color': 'black', 'alpha': 0.2, 'label': 'error band'}
+
+        linspace = np.linspace(self.x.min(), self.x.max(), n_points)
         y = self.eval(linspace)
-        plt.plot(linspace, y,color= c_model, alpha = 0.5)
+        plt.plot(linspace, y, **plt_kwargs)
 
-        if show_errorband:
+        if errorband:
             eval_stderr = self.eval_stderr(linspace, sigma)
-            plt.fill_between(linspace, y-eval_stderr, y+eval_stderr,color= c_model, alpha = 0.2)
-        plt.legend()
+            plt.fill_between(linspace, y-eval_stderr, y+eval_stderr,**fill_kwargs)
 
     def show_correlation(self, parameter_ticks : bool = None):
         """
@@ -373,6 +360,23 @@ class FunctionalModel(ABC):
         plt.gca().xaxis.set_label_position('top')
         plt.xlabel('parameter')
         plt.ylabel('parameter')
+
+    def print_parameters(self, precision : int = 3, sigma : float = None):
+        """prints the parameters and their uncertainties in a human-readable format.
+
+        Args:
+            precision int: Defaults to 3.
+            sigma float: Defaults to None.
+        """
+        if sigma is None:
+            sigma = self.m_0
+        errors = sigma*np.sqrt(np.diag(self.parameter_cof()))
+        for i, (v, e) in enumerate(zip(self.parameters, errors)):
+            if self.parameter_symbols is not None:
+                s = self.parameter_symbols[i]
+            else:
+                s = sympy.Symbol(f'a_{i}')
+            print(f"{s} = {v:.{precision}f} ± {e:.{precision}f}")
 
     def print_parameters_latex(self, precision : int = 3, sigma : float = None):
         """
@@ -608,7 +612,7 @@ class DFT_FunctionalModel(FunctionalModel):
         parameter_cof = self.parameter_cof()
 
         exprs = [self.parameters[0]] + [
-            sympy.sqrt(self.parameters[i]**2 + self.parameters[self.m+1+i]**2) for i in range(1,self.m)
+            sympy.sqrt(self.parameter_symbols[i]**2 + self.parameter_symbols[self.m+1+i]**2) for i in range(1,self.m)
         ]
         # compute the standard errors of the amplitudes
         return propagate_error(exprs, self.parameter_symbols, self.parameters, parameter_cof)[1]
