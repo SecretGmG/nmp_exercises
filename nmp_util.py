@@ -426,6 +426,9 @@ class PolyFunctionalModel(FunctionalModel):
 
         self.parameter_symbols = [sympy.Symbol(f'a_{i}') for i in reversed(range(degree+1))]
 
+        self.max_iter = 1 #this is a linear model, so we only need one iteration to fit the parameters
+        self.epsilon = np.inf # we don't need to check for convergence, since we only do one iteration
+
     def get_design_matrix(self, x : np.ndarray) -> np.ndarray:
         return np.column_stack([x**i for i in reversed(range(self.degree+1))])
 
