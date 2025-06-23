@@ -7,7 +7,8 @@ For examm preparation, i will do the same with old exams, so that i can use them
 from abc import ABC, abstractmethod
 from copy import deepcopy
 import warnings
-from typing import Callable, Iterable, Tuple, List, Literal
+from collections.abc import Callable, Iterable
+from typing import Literal
 import matplotlib.pyplot as plt
 import scipy.sparse
 import sympy
@@ -16,7 +17,6 @@ import numpy as np
 
 #improve readability of the output of numpy arrays in jupyter notebooks
 np.set_printoptions(linewidth=150)
-
 
 ## SERIE 1
 
@@ -84,7 +84,7 @@ def mjd_to_datetime(
 
 ## SERIE 2
 
-def error_propagation_formula(f : sympy.Matrix|Iterable[sympy.Expr]|sympy.Expr, args : List[sympy.Symbol]) -> Tuple[sympy.Expr, sympy.MatrixSymbol]:
+def error_propagation_formula(f : sympy.Matrix|Iterable[sympy.Expr]|sympy.Expr, args : list[sympy.Symbol]) -> tuple[sympy.Expr, sympy.MatrixSymbol]:
     """
     Computes symbolic error propagation A K A^T and returns it with symbolic covariance K.
     should not be used direkctly most of the time, use propagate_error instead.
@@ -109,7 +109,7 @@ def error_propagation_formula(f : sympy.Matrix|Iterable[sympy.Expr]|sympy.Expr, 
     # this is the same as A @ K @ A.T in numpy, but sympy doesn't support the @ operator
     return A * K * A.T , K #skript S.12
 
-def propagate_error(f : sympy.Matrix|Iterable[sympy.Expr]|sympy.Expr, args_symbols : Iterable[sympy.Symbol], args : np.ndarray, cov : np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+def propagate_error(f : sympy.Matrix|Iterable[sympy.Expr]|sympy.Expr, args_symbols : Iterable[sympy.Symbol], args : np.ndarray, cov : np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     """
     Propagates error through a function using the covariance matrix.
 
@@ -127,7 +127,7 @@ def propagate_error(f : sympy.Matrix|Iterable[sympy.Expr]|sympy.Expr, args_symbo
     result_cov = sympy.lambdify([*args_symbols, K],cov_expr)(*args, cov)
     return (result, result_cov)
 
-def matrix_quiver(x : np.ndarray, y: np.ndarray, matrices : np.ndarray, shade_determinant = False, label = None, det_label = None):
+def matrix_quiver(x : np.ndarray, y: np.ndarray, matrices : np.ndarray, shade_determinant = False, label = None, det_label = 'determinant'):
     """
     Visualizes eigenvectors of matrices using quiver plots.
 
@@ -137,7 +137,7 @@ def matrix_quiver(x : np.ndarray, y: np.ndarray, matrices : np.ndarray, shade_de
         matrices (np.ndarray): Matrices for which eigenvectors are computed.
         shade_determinant (bool): If True, shades the plot based on the determinant of the matrices.
         label (str): Label for the eigenvectors. optional defaults to None
-        det_label (str): Label for the determinant. optional defaults to None
+        det_label (str): Label for the determinant. optional defaults to 'determinant'
     Returns:
         None
     """
@@ -153,20 +153,19 @@ def matrix_quiver(x : np.ndarray, y: np.ndarray, matrices : np.ndarray, shade_de
 
     if shade_determinant:
         mesh = plt.pcolormesh(x, y, determinants)
-        if not det_label is None:
-            plt.colorbar(mesh, label = det_label)
+        plt.colorbar(mesh, label = det_label)
 
     q1 = plt.quiver(x, y, scaled_eigenvectors[...,0,0], scaled_eigenvectors[...,1,0], **EIGEN_VEC_QUIVER_KWARGS)
     q2 = plt.quiver(x, y, scaled_eigenvectors[...,0,1], scaled_eigenvectors[...,1,1], **EIGEN_VEC_QUIVER_KWARGS)
 
-    # needed to ensure proper scaling of the eigenvector arrows
+    # ensure correct relative scaling of the eigenvector arrows
     scale = np.max(q1.scale,q2.scale)
     q1.scale = scale
     q2.scale = scale
 
     if not label is None:
         #add empty scatter plot to add label, is a little hacky but works
-        plt.scatter(None,None,marker = r'+',label = label, color = 'black')
+        plt.scatter(None, None, marker = '+', label = label, color = 'black')
 
 
 ## Serie 3&4
@@ -176,7 +175,8 @@ class FunctionalModel(ABC):
 
     Stores all intermediate computations for transparency and debugging.
     """
-
+    ### Constants
+    NR_TICKS_OVERCROWDING_TRESHOLD = 10
     ### Public fields
 
     # defines break conditions for the iterative process
@@ -184,7 +184,7 @@ class FunctionalModel(ABC):
     epsilon : float = 1e-4
 
     # used to provide nicer outputs, needs to be set by the implementation
-    parameter_symbols : List[sympy.Symbol] = None
+    parameter_symbols : list[sympy.Symbol] = None
 
     # is called after each iteration, can be used to print or log the current state of the model
     # default is a no-op, but can be set to a function that takes the model as argument
@@ -221,6 +221,11 @@ class FunctionalModel(ABC):
     def fit(self, x : np.ndarray, y : np.ndarray, weight_matrix: scipy.sparse.spmatrix|None = None):
         """
         Fits model to data using iterative weighted least squares.
+        Args:
+            x (np.ndarray) : the independent variables
+            y (np.ndarray) : the dependent variables
+            weight_matrix (scipy.sparse.spmatrix) : the weights associated to the dependent variables, should be equal to the inverse of the Cofactormatrix
+                if None defaults to the identity matrix. Default is None.
         """
 
         if self.parameters is None:
@@ -231,7 +236,8 @@ class FunctionalModel(ABC):
 
         # by default use the identity matrix as weight matrix
         if weight_matrix is None:
-            weight_matrix = scipy.sparse.diags(np.ones(len(x)))
+            weight_matrix = scipy.sparse.diags(np.ones(len(y)))
+
         weight_matrix = scipy.sparse.csr_matrix(weight_matrix)
 
         self.P = weight_matrix
@@ -249,7 +255,7 @@ class FunctionalModel(ABC):
             # because the intermediate matrix doesn't need to be stored and the sparse matrix might improve performance
             self.b = self.A.T @ self.P.dot(self.y - self.y_pred)
 
-            # use lstsq instead of inv to avoid computing the inverse and handle singular normal matrix
+            # use lstsq instead of inv to avoid computing the inverse and handle singular normal matrices
             self.delta_parameters = np.linalg.lstsq(self.normal_matrix, self.b)[0]
 
             # Update the parameters and associated values
@@ -258,6 +264,7 @@ class FunctionalModel(ABC):
             self.residuals = self.y - self.y_pred
             self.m_0 = np.sqrt((self.residuals.T @ self.P @ self.residuals) / (self.dof))
 
+            # finally call the logger
             self.logger(self)
 
             if np.all(np.abs(self.delta_parameters) < self.epsilon):
@@ -267,14 +274,25 @@ class FunctionalModel(ABC):
             warnings.warn("The Functional Model did not converge, make sure you set reasonable initial parameters")
 
     def parameter_cof(self) -> np.ndarray:
+        """
+        Returns the cofactor matrix of the parameters.
+        NOTE: needs to be multiplied by m_0**2 or sigma_0**2 to get the covariance matrix
+        """
         return np.linalg.inv(self.normal_matrix)
 
     def parameter_corr(self) -> np.ndarray:
+        """
+        Returns the correlation matrix of the parameters.
+        """
         cofactor_matrix = self.parameter_cof()
         diag = cofactor_matrix.diagonal()**0.5
         return cofactor_matrix / np.outer(diag, diag)
 
     def eval_cof(self, x : np.ndarray) -> np.ndarray:
+        """
+        Returns the cofactor matrix of the predicted values at the given input x.
+        NOTE: needs to be multiplied by m_0**2 or sigma_0**2 to get the covariance matrix
+        """
         A = self.get_design_matrix(x)
         return A@self.parameter_cof()@A.T
 
@@ -297,7 +315,7 @@ class FunctionalModel(ABC):
         To test the model, compare the ratio m_0^2 / sigma_0^2 (i.e. the reduced chi-squared statistic) to this threshold.
         If it is greater, the model is rejected at significance level alpha.
 
-        Note: Smaller alpha means stricter evidence is required to reject the model,
+        NOTE: Smaller alpha means stricter evidence is required to reject the model,
         not a tolerance for larger errors.
         """
         return stats.chi2.ppf(1 - alpha, self.dof) / self.dof
@@ -349,7 +367,7 @@ class FunctionalModel(ABC):
             if self.parameter_symbols is None:
                 parameter_ticks = False
             else:
-                parameter_ticks = len(self.parameter_symbols) < 10
+                parameter_ticks = len(self.parameter_symbols) < self.NR_TICKS_OVERCROWDING_TRESHOLD
 
         if parameter_ticks:
             n_ticks = len(self.parameter_symbols)
@@ -404,7 +422,7 @@ class FunctionalModel(ABC):
     @abstractmethod
     def eval(self, x : np.ndarray) -> np.ndarray:
         """
-        Evaluates the model at the given x values. Needs Implementation.
+        Evaluates the model predictions at the given x values. Needs Implementation.
         """
         pass
 
@@ -426,8 +444,8 @@ class PolyFunctionalModel(FunctionalModel):
 
         self.parameter_symbols = [sympy.Symbol(f'a_{i}') for i in reversed(range(degree+1))]
 
-        self.max_iter = 1 #this is a linear model, so we only need one iteration to fit the parameters
-        self.epsilon = np.inf # we don't need to check for convergence, since we only do one iteration
+        self.max_iter = 1 #this is a linear model, so only one iteration is needed to fit the parameters
+        self.epsilon = np.inf # no need to check for convergence
 
     def get_design_matrix(self, x : np.ndarray) -> np.ndarray:
         return np.column_stack([x**i for i in reversed(range(self.degree+1))])
@@ -440,11 +458,11 @@ class SympyFunctionalModel(FunctionalModel):
     function_expr : sympy.Expr
     feature_symbol : sympy.Symbol
 
-    differential_expressions : List[sympy.Expr]
-    differentials : List[Callable] # store these for debugging and transparancy
+    differential_expressions : list[sympy.Expr]
+    differentials : list[Callable] # store these for debugging and transparancy
     lambdified : Callable
 
-    def __init__(self, function_expr : sympy.Expr, parameter_symbols : List[sympy.Symbol], feature_symbol : sympy.Symbol):
+    def __init__(self, function_expr : sympy.Expr, parameter_symbols : list[sympy.Symbol], feature_symbol : sympy.Symbol):
         self.function_expr = function_expr
         self.parameter_symbols = parameter_symbols
         self.feature_symbol = feature_symbol
@@ -455,7 +473,7 @@ class SympyFunctionalModel(FunctionalModel):
         self.differential_expressions = [sympy.diff(self.function_expr, a) for a in parameter_symbols]
         self.differentials = [sympy.lambdify([*parameter_symbols, self.feature_symbol], diff) for diff in self.differential_expressions]
 
-        #set initial parameters to zero by default
+        # set initial parameters to zero by default
         self.parameters = np.zeros(len(parameter_symbols))
 
     def eval(self, x : np.ndarray) -> np.ndarray:
@@ -539,7 +557,7 @@ def coeffs_to_amplitude(coeffs : np.ndarray) -> np.ndarray:
     assert len(coeffs) == 2*m+1, "coeffs must be of length 2*m+1"
     return np.concatenate((coeffs[0:1], np.sqrt(coeffs[1:m+1]**2 + coeffs[m+1:]**2)))
 
-def amplitude_spectrum_via_numpy(y : np.ndarray, m : int = None, d : float = 1) -> Tuple[np.ndarray, np.ndarray]:
+def amplitude_spectrum_via_numpy(y : np.ndarray, m : int = None, d : float = 1) -> tuple[np.ndarray, np.ndarray]:
     """
     Computes the amplitude spectrum of the data using numpy's fft.
     The amplitude is normalized by the length of the data, therefore corresponding to the factors of the discrete fourier transform.

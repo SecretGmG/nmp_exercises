@@ -170,6 +170,6 @@ a(t) = a_0 + \sum_{i=1}^{i=m} a_i \cos(i \omega t) + b_i \sin(i \omega t)
 $$
 mit
 $$
-\omega = \frac{2\pi}{|t_N-t_1|}
+\omega = \frac{2\pi}{t_N-t_1}
 $$
 Die Designmatrix ist nun Trivial aufzustellen.
